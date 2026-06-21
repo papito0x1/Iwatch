@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; connect-src 'none';" />
+  <title>Solana Wallet Tracker</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- ===================== Top bar ===================== -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">◎</span>
+      <div class="brand-text">
+        <strong>Solana Wallet Tracker</strong>
+        <span class="brand-sub">live on-chain portfolio</span>
+      </div>
+    </div>
+
+    <form id="wallet-form" class="wallet-form" autocomplete="off">
+      <div class="input-wrap">
+        <span class="input-icon">🔑</span>
+        <input id="wallet-input" type="text" spellcheck="false"
+               placeholder="Paste a Solana wallet address…" />
+      </div>
+      <button type="submit" class="btn btn-primary">Track</button>
+    </form>
+
+    <div class="topbar-right">
+      <div id="status" class="status status--idle" title="Connection status">
+        <span class="status-dot"></span>
+        <span id="status-text">Idle</span>
+      </div>
+      <button id="settings-btn" class="btn btn-ghost icon-btn" title="Settings">⚙</button>
+    </div>
+  </header>
+
+  <main id="app" class="app">
+    <!-- ===================== Empty state ===================== -->
+    <section id="empty-state" class="empty-state">
+      <div class="empty-icon">◎</div>
+      <h1>Track any Solana wallet, live</h1>
+      <p>Paste a wallet address above to see its tokens, holdings, and total value update in real time as prices move on-chain.</p>
+      <div class="empty-samples">
+        <span>Try a demo wallet:</span>
+        <button class="chip sample" data-addr="9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM">Demo wallet 1</button>
+        <button class="chip sample" data-addr="Gjwcz1uMnFFiv5XCRG7sgmJWnYbWNRRJYqXMnnEpDvY9">Demo wallet 2</button>
+      </div>
+    </section>
+
+    <!-- ===================== Dashboard ===================== -->
+    <section id="dashboard" class="dashboard hidden">
+      <!-- Hero / total value -->
+      <div class="hero card">
+        <div class="hero-info">
+          <div class="hero-label">Total Portfolio Value</div>
+          <div id="total-value" class="hero-value">$0.00</div>
+          <div class="hero-meta">
+            <span id="total-change" class="change">—</span>
+            <span class="dot-sep">•</span>
+            <span id="token-count">0 tokens</span>
+            <span class="dot-sep">•</span>
+            <button id="wallet-pill" class="wallet-pill" title="View on Solscan">
+              <span id="wallet-short">—</span> ↗
+            </button>
+          </div>
+          <div class="hero-updated">
+            Updated <span id="last-updated">—</span>
+            <span class="dot-sep">•</span>
+            next price tick in <span id="next-tick">—</span>s
+          </div>
+        </div>
+        <div class="hero-chart">
+          <canvas id="total-chart"></canvas>
+        </div>
+      </div>
+
+      <!-- Widget / control bar -->
+      <div class="controls">
+        <div class="controls-left">
+          <h2>Token Widgets</h2>
+          <span id="visible-count" class="muted">—</span>
+        </div>
+        <div class="controls-right">
+          <label class="sort-label">
+            Sort
+            <select id="sort-select">
+              <option value="value">By value</option>
+              <option value="change">By 24h change</option>
+              <option value="name">By name</option>
+            </select>
+          </label>
+          <button id="manage-btn" class="btn btn-ghost">＋ Manage widgets</button>
+          <button id="refresh-btn" class="btn btn-ghost" title="Refresh now">⟳</button>
+        </div>
+      </div>
+
+      <!-- Token graph grid -->
+      <div id="token-grid" class="token-grid"></div>
+    </section>
+  </main>
+
+  <!-- ===================== Manage widgets drawer ===================== -->
+  <div id="manage-modal" class="modal hidden">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3>Manage token widgets</h3>
+        <button class="icon-btn btn-ghost" data-close>✕</button>
+      </div>
+      <p class="muted">Toggle which tokens show a live graph. Hidden tokens still count toward your total value.</p>
+      <div id="manage-list" class="manage-list"></div>
+    </div>
+  </div>
+
+  <!-- ===================== Settings modal ===================== -->
+  <div id="settings-modal" class="modal hidden">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3>Settings</h3>
+        <button class="icon-btn btn-ghost" data-close>✕</button>
+      </div>
+
+      <label class="field">
+        <span>Custom RPC endpoint</span>
+        <input id="rpc-input" type="text" spellcheck="false"
+               placeholder="https://api.mainnet-beta.solana.com" />
+        <small class="muted">The public RPC is rate-limited. Paste a Helius / QuickNode / Triton URL for smoother updates.</small>
+      </label>
+
+      <div class="field-row">
+        <label class="field">
+          <span>Price refresh (seconds)</span>
+          <input id="price-interval" type="number" min="5" max="600" />
+        </label>
+        <label class="field">
+          <span>Balance refresh (seconds)</span>
+          <input id="balance-interval" type="number" min="30" max="3600" />
+        </label>
+      </div>
+
+      <div class="settings-actions">
+        <button id="clear-data" class="btn btn-danger">Clear saved data</button>
+        <button id="save-settings" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Card template -->
+  <template id="card-template">
+    <article class="token-card card">
+      <div class="tc-head">
+        <img class="tc-icon" alt="" />
+        <div class="tc-id">
+          <div class="tc-symbol"></div>
+          <div class="tc-name"></div>
+        </div>
+        <span class="tc-change change"></span>
+        <button class="tc-hide icon-btn btn-ghost" title="Hide graph">✕</button>
+      </div>
+      <div class="tc-value"></div>
+      <div class="tc-stats">
+        <div><span class="muted">Holdings</span><b class="tc-amount"></b></div>
+        <div><span class="muted">Price</span><b class="tc-price"></b></div>
+      </div>
+      <div class="tc-chart"><canvas></canvas></div>
+    </article>
+  </template>
+
+  <script src="../node_modules/chart.js/dist/chart.umd.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

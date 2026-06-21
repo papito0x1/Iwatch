@@ -1,0 +1,17 @@
+{
+  "name": "solana-wallet-tracker",
+  "version": "1.0.0",
+  "description": "A modern Electron dashboard for tracking a Solana wallet's token holdings and value in real time.",
+  "main": "main.js",
+  "author": "",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^31.3.0"
+  },
+  "dependencies": {
+    "chart.js": "^4.4.3"
+  }
+}

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Iwatch
+GenericName=Wallet Watcher
+Comment=Watch a Solana wallet's holdings and value in real time
+Exec=iwatch
+Icon=io.github.papito0x1.iwatch
+Terminal=false
+Categories=Office;Finance;Network;
+Keywords=solana;wallet;crypto;portfolio;tracker;
+StartupNotify=true
+StartupWMClass=io.github.papito0x1.iwatch

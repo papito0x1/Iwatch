@@ -1,0 +1,28 @@
+# Node (legacy Electron app)
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+**/generated_plugin_registrant.*
+
+# Linux
+linux/flutter/ephemeral/
+
+# IDE
+.idea/
+*.iml
+
+# Reference screenshots dropped in the repo root
+/Screenshot*.png
+
+# Packaging output
+/dist/
