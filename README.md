@@ -13,6 +13,10 @@ the GNOME/Adwaita conventions you already know from **Settings**, **Files** and 
 
 ![status](https://img.shields.io/badge/flutter-linux-E95420) ![status](https://img.shields.io/badge/ubuntu-yaru-77216F)
 
+<p align="center">
+  <img src="docs/screenshot.png" width="900" alt="Iwatch tracking a Solana wallet" />
+</p>
+
 ## Download
 
 Grab the latest `.deb` from [**Releases**](https://github.com/papito0x1/Iwatch/releases/latest):
