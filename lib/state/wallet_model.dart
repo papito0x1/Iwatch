@@ -78,10 +78,11 @@ class WalletModel extends ChangeNotifier {
   Timer? _histTimer;
   Timer? _chartTimer;
 
-  /// How often the selected token's chart polls for fresh candles. Kept short
-  /// for a near-live last candle; each poll is one tiny request (last few
-  /// candles only) so it stays well under GeckoTerminal's keyless rate limit.
-  static const _chartLiveInterval = Duration(seconds: 15);
+  /// How often the charts poll for fresh candles. Kept short for a near-live
+  /// last bar; each poll is one tiny request (last few candles only) per chart
+  /// — selected token + BTC — so it stays under GeckoTerminal's keyless rate
+  /// limit (~30 req/min → ~12 req/min at this cadence).
+  static const _chartLiveInterval = Duration(seconds: 10);
 
   // ---- prefs keys (mirror the LS map) ---------------------------------------
   static const _kAddress = 'swt.address';
@@ -168,18 +169,33 @@ class WalletModel extends ChangeNotifier {
     await loadChart(id, ChartRange.h1);
   }
 
-  /// Live tick: silently top up the *selected* token's chart with the latest
-  /// few candles so the last bar tracks the market in near real time. Updates
-  /// in place (no spinner, no error clobber) and preserves the user's zoom/pan.
+  /// Live tick: silently top up the *selected* token's chart — and the BTC
+  /// reference chart shown beside it — with the latest few candles so the last
+  /// bar tracks the market in near real time. Updates in place (no spinner, no
+  /// error clobber) and preserves the user's zoom/pan.
   Future<void> _tickChart() async {
     final id = selectedId;
-    if (id == portfolioId) return;
+    // The BTC chart ticks alongside the selected token's chart; both are small
+    // single requests, so we run them concurrently and stay well under
+    // GeckoTerminal's keyless rate limit.
+    final futures = <Future<void>>[];
+    if (id != portfolioId) futures.add(_tickOne(id));
+    futures.add(_tickOne(SolanaService.btcMint));
+    await Future.wait(futures);
+  }
+
+  /// Top up a single token's chart with the latest few candles. No-op if there
+  /// is nothing loaded yet, a full load is running, or the token was switched
+  /// away from while we fetched. Silent on transient failures.
+  Future<void> _tickOne(String id) async {
     final existing = _chartById[id];
     if (existing == null || existing.isEmpty) return; // initial load handles it
     if (_chartLoading.contains(id)) return; // a full load is already running
     final range = _rangeById[id];
     if (range == null) return;
-    final mint = rowById(id)?.mint ?? (id == 'SOL' ? SolanaService.wsolMint : id);
+    final mint = id == SolanaService.btcMint
+        ? SolanaService.btcMint
+        : (rowById(id)?.mint ?? (id == 'SOL' ? SolanaService.wsolMint : id));
     if (mint.isEmpty) return;
 
     try {
@@ -187,7 +203,7 @@ class WalletModel extends ChangeNotifier {
           await _svc.getRecentCandles(mint: mint, range: range, count: 4);
       if (recent.isEmpty) return;
       // Bail if the user moved on (different token/range) while we fetched.
-      if (selectedId != id || _rangeById[id] != range) return;
+      if (_rangeById[id] != range) return;
       final cur = _chartById[id];
       if (cur == null || cur.isEmpty) return;
 
