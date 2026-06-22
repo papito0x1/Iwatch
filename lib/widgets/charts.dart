@@ -44,7 +44,8 @@ class TotalChart extends StatelessWidget {
     final yb = _bounds(points, (p) => p.y);
     final yPad = (yb.max - yb.min) * 0.08;
 
-    return LineChart(
+    return RepaintBoundary(
+      child: LineChart(
       LineChartData(
         minX: xb.min,
         maxX: xb.max,
@@ -123,6 +124,7 @@ class TotalChart extends StatelessWidget {
         ],
       ),
       duration: Duration.zero,
+    ),
     );
   }
 }
@@ -144,7 +146,8 @@ class Sparkline extends StatelessWidget {
     final yb = _bounds(points, (p) => p.y);
     final yPad = (yb.max - yb.min) * 0.1;
 
-    return LineChart(
+    return RepaintBoundary(
+      child: LineChart(
       LineChartData(
         minX: xb.min,
         maxX: xb.max,
@@ -175,6 +178,7 @@ class Sparkline extends StatelessWidget {
         ],
       ),
       duration: Duration.zero,
+    ),
     );
   }
 }

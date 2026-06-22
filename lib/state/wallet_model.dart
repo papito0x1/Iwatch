@@ -72,11 +72,9 @@ class WalletModel extends ChangeNotifier {
   StatusKind statusKind = StatusKind.idle;
   String statusText = 'Idle';
   int _lastUpdatedMs = 0;
-  int _nextTickAt = 0;
 
   Timer? _priceTimer;
   Timer? _balanceTimer;
-  Timer? _countdownTimer;
   Timer? _histTimer;
   Timer? _chartTimer;
 
@@ -98,13 +96,6 @@ class WalletModel extends ChangeNotifier {
   bool get hasWallet => address.isNotEmpty;
   List<Point> get totalHistory => _historyTotal;
   int get lastUpdatedMs => _lastUpdatedMs;
-
-  int get nextTickSeconds {
-    if (_nextTickAt == 0) return 0;
-    final rem =
-        ((_nextTickAt - DateTime.now().millisecondsSinceEpoch) / 1000).ceil();
-    return rem < 0 ? 0 : rem;
-  }
 
   double get totalValue => _lastList.fold(0.0, (s, t) => s + t.value);
 
@@ -376,11 +367,9 @@ class WalletModel extends ChangeNotifier {
   void _clearTimers() {
     _priceTimer?.cancel();
     _balanceTimer?.cancel();
-    _countdownTimer?.cancel();
     _chartTimer?.cancel();
     _priceTimer = null;
     _balanceTimer = null;
-    _countdownTimer = null;
     _chartTimer = null;
   }
 
@@ -390,12 +379,7 @@ class WalletModel extends ChangeNotifier {
         Timer.periodic(Duration(seconds: priceInterval), (_) => tickPrices());
     _balanceTimer = Timer.periodic(
         Duration(seconds: balanceInterval), (_) => refreshBalances());
-    _countdownTimer =
-        Timer.periodic(const Duration(seconds: 1), (_) => notifyListeners());
-    _chartTimer =
-        Timer.periodic(_chartLiveInterval, (_) => _tickChart());
-    _nextTickAt =
-        DateTime.now().millisecondsSinceEpoch + priceInterval * 1000;
+    _chartTimer = Timer.periodic(_chartLiveInterval, (_) => _tickChart());
   }
 
   Future<void> refreshBalances() async {
@@ -437,7 +421,6 @@ class WalletModel extends ChangeNotifier {
     } catch (e) {
       _setStatus(StatusKind.error, _truncate(_errMsg(e)));
     }
-    _nextTickAt = DateTime.now().millisecondsSinceEpoch + priceInterval * 1000;
   }
 
   /// On fast ticks only reprice what's worth repricing: visible widgets plus
@@ -638,6 +621,9 @@ class WalletModel extends ChangeNotifier {
 
   // ---------------------------------------------------------------------------
   void _setStatus(StatusKind kind, String text) {
+    // Skip the rebuild when nothing changed — e.g. a steady 'Live' price tick
+    // that already called _applyData would otherwise notify a second time.
+    if (statusKind == kind && statusText == text) return;
     statusKind = kind;
     statusText = text;
     notifyListeners();

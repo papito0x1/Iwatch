@@ -251,12 +251,14 @@ class _Chart extends StatelessWidget {
     return Stack(
       children: [
         Positioned.fill(
-          child: CustomPaint(
-            painter: _CandlePainter(
-              candles: candles,
-              hoverIndex: hoverIndex,
-              start: start,
-              end: end,
+          child: RepaintBoundary(
+            child: CustomPaint(
+              painter: _CandlePainter(
+                candles: candles,
+                hoverIndex: hoverIndex,
+                start: start,
+                end: end,
+              ),
             ),
           ),
         ),
