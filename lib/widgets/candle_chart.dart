@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../models/candle.dart';
@@ -11,6 +12,13 @@ import '../utils/format.dart';
 /// price axis with a live last-price tag, time labels along the bottom, an
 /// OHLC legend in the top-left that follows the cursor, and a dashed crosshair
 /// on hover.
+///
+/// Interaction (TradingView-style):
+/// - scroll wheel zooms in/out, anchored on the cursor;
+/// - click-drag pans through time;
+/// - a "scroll to latest" button (bottom-right) resets the view to the full
+///   range. It only appears once you've zoomed or panned away.
+/// The price axis auto-scales to whatever candles are currently in view.
 class CandleChart extends StatefulWidget {
   const CandleChart({
     super.key,
@@ -32,6 +40,34 @@ class CandleChart extends StatefulWidget {
 class _CandleChartState extends State<CandleChart> {
   int? _hoverIndex;
 
+  // Visible window in fractional candle-index units. null => default (full
+  // range). Candles only reload on a range change, so indices stay valid.
+  double? _viewStart;
+  double? _viewEnd;
+
+  static const _minSpan = 8.0; // most-zoomed-in: at least this many candles
+
+  @override
+  void didUpdateWidget(CandleChart old) {
+    super.didUpdateWidget(old);
+    // A new candle set (range change / refresh) invalidates the viewport.
+    if (old.candles != widget.candles) {
+      _viewStart = null;
+      _viewEnd = null;
+      _hoverIndex = null;
+    }
+  }
+
+  bool get _isDefaultView => _viewStart == null && _viewEnd == null;
+
+  double get _start => _viewStart ?? 0;
+  double get _end => _viewEnd ?? widget.candles.length.toDouble();
+
+  double _plotWidth() {
+    final w = (context.findRenderObject() as RenderBox?)?.size.width ?? 300;
+    return w - _Chart.priceAxisWidth;
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = widget.candles;
@@ -46,18 +82,38 @@ class _CandleChartState extends State<CandleChart> {
     }
     return SizedBox(
       height: widget.height,
-      child: MouseRegion(
-        onHover: (e) => _updateHover(e.localPosition, cs),
-        onExit: (_) => _clearHover(),
-        child: GestureDetector(
-          onPanUpdate: (e) => _updateHover(e.localPosition, cs),
-          onTapDown: (d) => _updateHover(d.localPosition, cs),
-          child: _Chart(
-            candles: cs,
-            symbol: widget.symbol,
-            rangeLabel: widget.rangeLabel,
-            hoverIndex: _hoverIndex,
-            height: widget.height,
+      child: Listener(
+        onPointerSignal: (e) {
+          if (e is PointerScrollEvent) _zoom(e.localPosition, e.scrollDelta.dy);
+        },
+        child: MouseRegion(
+          cursor: SystemMouseCursors.precise,
+          onHover: (e) => _updateHover(e.localPosition, cs),
+          onExit: (_) => _clearHover(),
+          child: GestureDetector(
+            // Horizontal-only so vertical drags still scroll the page.
+            onHorizontalDragUpdate: (e) => _pan(e.delta.dx),
+            onDoubleTap: _reset,
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: _Chart(
+                    candles: cs,
+                    symbol: widget.symbol,
+                    rangeLabel: widget.rangeLabel,
+                    hoverIndex: _hoverIndex,
+                    start: _start,
+                    end: _end,
+                  ),
+                ),
+                if (!_isDefaultView)
+                  Positioned(
+                    right: _Chart.priceAxisWidth + 8,
+                    bottom: _Chart.timeAxisHeight + 8,
+                    child: _ResetButton(onTap: _reset),
+                  ),
+              ],
+            ),
           ),
         ),
       ),
@@ -65,16 +121,101 @@ class _CandleChartState extends State<CandleChart> {
   }
 
   void _updateHover(Offset pos, List<Candle> cs) {
-    final w = (context.findRenderObject() as RenderBox?)?.size.width ?? 300;
-    final plotW = w - _Chart.priceAxisWidth;
-    if (pos.dx < 0 || pos.dx > plotW) return;
-    final slot = plotW / cs.length;
-    final i = (pos.dx / slot).floor().clamp(0, cs.length - 1);
-    if (_hoverIndex != i) setState(() => _hoverIndex = i);
+    final plotW = _plotWidth();
+    if (pos.dx < 0 || pos.dx > plotW) return _clearHover();
+    final span = _end - _start;
+    final idx = (_start + (pos.dx / plotW) * span).floor().clamp(0, cs.length - 1);
+    if (_hoverIndex != idx) setState(() => _hoverIndex = idx);
   }
 
   void _clearHover() {
     if (_hoverIndex != null) setState(() => _hoverIndex = null);
+  }
+
+  void _zoom(Offset pos, double scrollDy) {
+    final n = widget.candles.length.toDouble();
+    final plotW = _plotWidth();
+    final start = _start, end = _end;
+    final span = end - start;
+    final frac = (pos.dx / plotW).clamp(0.0, 1.0);
+    final anchor = start + frac * span; // candle index under the cursor
+
+    // Scroll up (negative dy) zooms in; down zooms out.
+    final factor = scrollDy < 0 ? 0.85 : 1 / 0.85;
+    var newSpan = (span * factor).clamp(_minSpan, n);
+
+    if (newSpan >= n) return _reset(); // fully zoomed out => default view
+
+    var newStart = anchor - frac * newSpan;
+    var newEnd = newStart + newSpan;
+    (newStart, newEnd) = _clampWindow(newStart, newEnd, n);
+    setState(() {
+      _viewStart = newStart;
+      _viewEnd = newEnd;
+    });
+  }
+
+  void _pan(double dx) {
+    if (_isDefaultView) return; // nothing to pan when showing everything
+    final n = widget.candles.length.toDouble();
+    final plotW = _plotWidth();
+    final span = _end - _start;
+    final d = -(dx / plotW) * span; // drag right => move back in time
+    var (newStart, newEnd) = _clampWindow(_start + d, _end + d, n);
+    setState(() {
+      _viewStart = newStart;
+      _viewEnd = newEnd;
+    });
+  }
+
+  (double, double) _clampWindow(double start, double end, double n) {
+    final span = end - start;
+    if (start < 0) {
+      start = 0;
+      end = span;
+    }
+    if (end > n) {
+      end = n;
+      start = n - span;
+    }
+    return (math.max(0, start), math.min(n, end));
+  }
+
+  void _reset() {
+    if (_isDefaultView) return;
+    setState(() {
+      _viewStart = null;
+      _viewEnd = null;
+    });
+  }
+}
+
+/// "Scroll to latest" / reset-view button, like TradingView's bottom-right
+/// affordance that appears once you've moved away from the live edge.
+class _ResetButton extends StatelessWidget {
+  const _ResetButton({required this.onTap});
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: 'Reset view',
+      child: Material(
+        color: AppColors.cardHi,
+        shape: const CircleBorder(
+            side: BorderSide(color: AppColors.borderStrong)),
+        child: InkWell(
+          onTap: onTap,
+          customBorder: const CircleBorder(),
+          child: const SizedBox(
+            width: 30,
+            height: 30,
+            child: Icon(Icons.keyboard_double_arrow_right,
+                size: 18, color: AppColors.text2),
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -84,14 +225,16 @@ class _Chart extends StatelessWidget {
     required this.symbol,
     required this.rangeLabel,
     required this.hoverIndex,
-    required this.height,
+    required this.start,
+    required this.end,
   });
 
   final List<Candle> candles;
   final String symbol;
   final String rangeLabel;
   final int? hoverIndex;
-  final double height;
+  final double start;
+  final double end;
 
   static const priceAxisWidth = 62.0;
   static const timeAxisHeight = 20.0;
@@ -106,6 +249,8 @@ class _Chart extends StatelessWidget {
             painter: _CandlePainter(
               candles: candles,
               hoverIndex: hoverIndex,
+              start: start,
+              end: end,
             ),
           ),
         ),
@@ -218,10 +363,17 @@ class _Legend extends StatelessWidget {
 }
 
 class _CandlePainter extends CustomPainter {
-  _CandlePainter({required this.candles, required this.hoverIndex});
+  _CandlePainter({
+    required this.candles,
+    required this.hoverIndex,
+    required this.start,
+    required this.end,
+  });
 
   final List<Candle> candles;
   final int? hoverIndex;
+  final double start;
+  final double end;
 
   static const _volumeBandRatio = 0.20; // bottom share for the volume band
   static const _bandGap = 10.0; // gap between price and volume bands
@@ -234,9 +386,16 @@ class _CandlePainter extends CustomPainter {
     final volH = plotH * _volumeBandRatio;
     final priceH = plotH - volH - _bandGap; // price candles live in [0, priceH]
 
-    // Price + volume extents.
+    final span = (end - start) <= 0 ? n.toDouble() : end - start;
+    final slot = plotW / span;
+    // Visible candle index range (with a little overscan).
+    final firstVis = math.max(0, start.floor() - 1);
+    final lastVis = math.min(n - 1, end.ceil());
+
+    // Price + volume extents over the *visible* candles (auto-scale).
     double lo = double.infinity, hi = double.negativeInfinity, volMax = 0;
-    for (final c in candles) {
+    for (var i = firstVis; i <= lastVis; i++) {
+      final c = candles[i];
       if (c.low < lo) lo = c.low;
       if (c.high > hi) hi = c.high;
       if (c.volume > volMax) volMax = c.volume;
@@ -245,16 +404,16 @@ class _CandlePainter extends CustomPainter {
     final pad = (hi - lo) * 0.06;
     final yMin = lo - pad;
     final yMax = hi + pad;
-    final span = (yMax - yMin) <= 0 || !(yMax - yMin).isFinite ? 1.0 : yMax - yMin;
+    final priceSpan =
+        (yMax - yMin) <= 0 || !(yMax - yMin).isFinite ? 1.0 : yMax - yMin;
 
-    double y(double price) => priceH - ((price - yMin) / span) * priceH;
+    double y(double price) => priceH - ((price - yMin) / priceSpan) * priceH;
+    double xOf(int i) => (i + 0.5 - start) * slot;
 
-    _drawGrid(canvas, plotW, priceH, yMin, yMax, y);
+    _drawGrid(canvas, plotW, yMin, yMax, y);
     _drawPriceAxis(canvas, size, plotW, yMin, yMax, y);
 
-    final slot = plotW / n;
-    final bodyW = (slot * 0.7).clamp(1.0, 14.0);
-
+    final bodyW = (slot * 0.7).clamp(1.0, 16.0);
     final upPaint = Paint()..color = AppColors.up;
     final downPaint = Paint()..color = AppColors.down;
     final upWick = Paint()
@@ -264,13 +423,13 @@ class _CandlePainter extends CustomPainter {
       ..color = AppColors.down
       ..strokeWidth = 1;
 
-    final volTop = priceH + _bandGap;
-    for (var i = 0; i < n; i++) {
+    canvas.save();
+    canvas.clipRect(Rect.fromLTWH(0, 0, plotW, plotH));
+    for (var i = firstVis; i <= lastVis; i++) {
       final c = candles[i];
-      final cx = i * slot + slot / 2;
+      final cx = xOf(i);
       final isUp = c.isUp;
 
-      // Volume bar in its own bottom band.
       if (volMax > 0) {
         final vh = (c.volume / volMax) * volH;
         canvas.drawRect(
@@ -281,41 +440,42 @@ class _CandlePainter extends CustomPainter {
         );
       }
 
-      // Wick.
       canvas.drawLine(
           Offset(cx, y(c.high)), Offset(cx, y(c.low)), isUp ? upWick : downWick);
 
-      // Body.
       final yOpen = y(c.open), yClose = y(c.close);
       final top = math.min(yOpen, yClose);
       final h = (yClose - yOpen).abs().clamp(1.0, double.infinity);
       canvas.drawRect(Rect.fromLTWH(cx - bodyW / 2, top, bodyW, h),
           isUp ? upPaint : downPaint);
     }
+    canvas.restore();
+
     // Faint separator above the volume band.
-    canvas.drawLine(Offset(0, volTop - _bandGap / 2),
-        Offset(plotW, volTop - _bandGap / 2), Paint()..color = AppColors.chartGrid);
+    final sepY = priceH + _bandGap / 2;
+    canvas.drawLine(Offset(0, sepY), Offset(plotW, sepY),
+        Paint()..color = AppColors.chartGrid);
 
-    _drawTimeAxis(canvas, plotH, slot, n);
-    _drawLastPrice(canvas, size, plotW, y);
+    _drawTimeAxis(canvas, plotH, slot, firstVis, lastVis);
 
-    if (hoverIndex != null) {
-      final i = hoverIndex!;
-      _drawCrosshair(canvas, size, plotW, priceH, i * slot + slot / 2,
-          candles[i], y);
+    // Last-price line/tag only when the newest candle is in view.
+    if (end >= n - 0.5) _drawLastPrice(canvas, size, plotW, y);
+
+    if (hoverIndex != null && hoverIndex! >= firstVis && hoverIndex! <= lastVis) {
+      _drawCrosshair(
+          canvas, size, plotW, priceH, xOf(hoverIndex!), candles[hoverIndex!], y);
     }
   }
 
-  void _drawGrid(Canvas canvas, double plotW, double priceH, double yMin,
-      double yMax, double Function(double) y) {
+  void _drawGrid(Canvas canvas, double plotW, double yMin, double yMax,
+      double Function(double) y) {
     final paint = Paint()
       ..color = AppColors.chartGrid
       ..strokeWidth = 1;
     const steps = 5;
     final span = yMax - yMin;
     for (var i = 0; i <= steps; i++) {
-      final v = yMin + span * i / steps;
-      final gy = y(v);
+      final gy = y(yMin + span * i / steps);
       canvas.drawLine(Offset(0, gy), Offset(plotW, gy), paint);
     }
   }
@@ -331,15 +491,17 @@ class _CandlePainter extends CustomPainter {
     }
   }
 
-  void _drawTimeAxis(Canvas canvas, double plotH, double slot, int n) {
-    final count = n >= 6 ? 6 : n;
-    final step = (n / count).floor().clamp(1, n);
+  void _drawTimeAxis(
+      Canvas canvas, double plotH, double slot, int firstVis, int lastVis) {
+    final visCount = lastVis - firstVis + 1;
+    final count = visCount >= 6 ? 6 : visCount;
+    final step = (visCount / count).floor().clamp(1, visCount);
     final labelY = plotH + 4;
-    // Show times for an intraday span, dates once it covers multiple days.
-    final spanSec = candles.last.time - candles.first.time;
+    final spanSec = candles[lastVis].time - candles[firstVis].time;
     final showDate = spanSec > 2 * 86400;
-    for (var i = 0; i < n; i += step) {
-      final cx = i * slot + slot / 2;
+    for (var i = firstVis; i <= lastVis; i += step) {
+      final cx = (i + 0.5 - start) * slot;
+      if (cx < 0 || cx > (slot * (end - start))) continue;
       final dt = DateTime.fromMillisecondsSinceEpoch(candles[i].time * 1000);
       final label = showDate
           ? '${dt.month}/${dt.day}'
@@ -349,7 +511,6 @@ class _CandlePainter extends CustomPainter {
     }
   }
 
-  /// Always-on last-price line + colored tag on the right axis (jup style).
   void _drawLastPrice(
       Canvas canvas, Size size, double plotW, double Function(double) y) {
     final c = candles.last;
@@ -379,8 +540,7 @@ class _CandlePainter extends CustomPainter {
     final tp = _text(text, fg, 10, weight: FontWeight.w600);
     final h = tp.height + 6;
     final rect = RRect.fromRectAndRadius(
-      Rect.fromLTWH(plotW + 1, cy - h / 2,
-          _Chart.priceAxisWidth - 2, h),
+      Rect.fromLTWH(plotW + 1, cy - h / 2, _Chart.priceAxisWidth - 2, h),
       const Radius.circular(3),
     );
     canvas.drawRRect(rect, Paint()..color = bg);
@@ -394,9 +554,9 @@ class _CandlePainter extends CustomPainter {
     final dir = (b - a) / total;
     var d = 0.0;
     while (d < total) {
-      final start = a + dir * d;
-      final end = a + dir * math.min(d + dash, total);
-      canvas.drawLine(start, end, p);
+      final s = a + dir * d;
+      final e = a + dir * math.min(d + dash, total);
+      canvas.drawLine(s, e, p);
       d += dash + gap;
     }
   }
@@ -418,5 +578,8 @@ class _CandlePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_CandlePainter old) =>
-      old.candles != candles || old.hoverIndex != hoverIndex;
+      old.candles != candles ||
+      old.hoverIndex != hoverIndex ||
+      old.start != start ||
+      old.end != end;
 }
