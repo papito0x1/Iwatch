@@ -73,14 +73,13 @@ class TokenDetail extends StatelessWidget {
     return ListView(
       padding: _bodyPadding(context),
       children: [
-        const SectionHeader('Value'),
         ChartCard(
           label: 'Holdings value',
           value: fmtUsd(row.value),
           points: model.historyFor(row.id),
           up: up,
         ),
-        const SizedBox(height: 24),
+        const SizedBox(height: 12),
         LayoutBuilder(
           builder: (context, constraints) {
             // Two candle charts need width to be readable; stack them on
@@ -98,13 +97,13 @@ class TokenDetail extends StatelessWidget {
             return Column(
               children: [
                 PriceChartSection(tokenId: row.id),
-                const SizedBox(height: 24),
+                const SizedBox(height: 12),
                 const BtcChartSection(),
               ],
             );
           },
         ),
-        const SizedBox(height: 24),
+        const SizedBox(height: 12),
         CollapsibleSection(
           title: 'Details',
           child: PropertyList(rows: [

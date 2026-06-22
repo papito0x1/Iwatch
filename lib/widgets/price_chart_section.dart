@@ -7,7 +7,6 @@ import '../state/wallet_model.dart';
 import '../theme.dart';
 import '../utils/format.dart';
 import 'candle_chart.dart';
-import 'sections.dart';
 
 /// "Price chart" section for a single token — a TradingView-style candle chart
 /// with a live price header and a jup.ag-style range selector. Placed above the
@@ -63,7 +62,6 @@ class _PriceChartSectionState extends State<PriceChartSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const SectionHeader('Price chart'),
         Container(
           decoration: BoxDecoration(
             color: AppColors.card,
@@ -333,7 +331,6 @@ class _BtcChartSectionState extends State<BtcChartSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const SectionHeader('BTC'),
         Container(
           decoration: BoxDecoration(
             color: AppColors.card,
