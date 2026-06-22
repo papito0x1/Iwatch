@@ -28,7 +28,19 @@ class _PriceChartSectionState extends State<PriceChartSection> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
   }
 
+  @override
+  void didUpdateWidget(PriceChartSection old) {
+    super.didUpdateWidget(old);
+    // Switching tokens reuses this State (same widget position), so the new
+    // token's chart must be (re)loaded here — initState only runs once. Deferred
+    // to post-frame so loadChart's notifyListeners doesn't fire during build.
+    if (old.tokenId != widget.tokenId) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+    }
+  }
+
   void _load() {
+    if (!mounted) return;
     final m = context.read<WalletModel>();
     m.loadChart(widget.tokenId, m.chartRangeFor(widget.tokenId));
   }
@@ -231,7 +243,10 @@ class _ChartBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (loading && candles.isEmpty) {
+    // Show the spinner while loading *or* before the first load has been kicked
+    // off (empty with no error yet) — avoids a "No chart data yet" flash when
+    // switching tokens.
+    if (candles.isEmpty && error == null) {
       return const Center(
         child: SizedBox(
           width: 22,

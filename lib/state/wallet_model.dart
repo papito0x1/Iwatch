@@ -54,7 +54,10 @@ class WalletModel extends ChangeNotifier {
   final Map<String, ChartRange> _rangeById = {};
   final Set<String> _chartLoading = {};
   final Map<String, String?> _chartError = {};
-  int _chartReqSeq = 0;
+  // Monotonic token source plus the current token per tokenId, so a stale load
+  // is discarded without one token's request cancelling another's.
+  int _chartSeq = 0;
+  final Map<String, int> _chartReqToken = {};
 
   // Sentinel id for the "Portfolio" overview entry in the sidebar.
   static const portfolioId = '__portfolio__';
@@ -138,7 +141,8 @@ class WalletModel extends ChangeNotifier {
     if (mint.isEmpty) return;
 
     if (_chartById[id] != null && _rangeById[id] == range) return;
-    final token = ++_chartReqSeq;
+    final token = ++_chartSeq;
+    _chartReqToken[id] = token;
     _rangeById[id] = range;
     _chartLoading.add(id);
     _chartError[id] = null;
@@ -146,14 +150,14 @@ class WalletModel extends ChangeNotifier {
 
     try {
       final candles = await _svc.getCandles(mint: mint, range: range);
-      if (token != _chartReqSeq) return; // a newer request superseded us
+      if (_chartReqToken[id] != token) return; // superseded by a newer load
       _chartById[id] = candles;
-      _chartError[id] = candles.isEmpty ? 'No chart data available.' : null;
+      _chartError[id] = candles.length < 2 ? 'No chart data available.' : null;
     } catch (e) {
-      if (token != _chartReqSeq) return;
+      if (_chartReqToken[id] != token) return;
       _chartError[id] = _truncate(_errMsg(e));
     } finally {
-      if (token == _chartReqSeq) {
+      if (_chartReqToken[id] == token) {
         _chartLoading.remove(id);
         notifyListeners();
       }
@@ -267,7 +271,8 @@ class WalletModel extends ChangeNotifier {
     _rangeById.clear();
     _chartLoading.clear();
     _chartError.clear();
-    _chartReqSeq++;
+    _chartSeq++; // invalidate any in-flight loads
+    _chartReqToken.clear();
     _lastList = [];
     _order = [];
     selectedId = portfolioId;
@@ -544,7 +549,8 @@ class WalletModel extends ChangeNotifier {
     _rangeById.clear();
     _chartLoading.clear();
     _chartError.clear();
-    _chartReqSeq++;
+    _chartSeq++; // invalidate any in-flight loads
+    _chartReqToken.clear();
     _setStatus(StatusKind.idle, 'Idle');
   }
 
