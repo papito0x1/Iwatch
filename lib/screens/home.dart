@@ -209,7 +209,18 @@ class _Sidebar extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 6),
         children: [
           SidebarTile(
-            leading: const AppLogo(size: 30, radius: 9),
+            // Neutral overview icon (the app logo already sits in the header).
+            leading: Container(
+              width: 30,
+              height: 30,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: AppColors.orange.withValues(alpha: 0.15),
+              ),
+              child: const Icon(Icons.donut_small,
+                  size: 18, color: AppColors.orange),
+            ),
             title: 'Portfolio',
             value: fmtUsd(model.totalValue),
             points: model.totalHistory,

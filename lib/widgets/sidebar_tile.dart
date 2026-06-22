@@ -10,7 +10,7 @@ import 'charts.dart';
 class SidebarTile extends StatefulWidget {
   const SidebarTile({
     super.key,
-    required this.leading,
+    this.leading,
     required this.title,
     required this.value,
     required this.points,
@@ -20,7 +20,7 @@ class SidebarTile extends StatefulWidget {
     this.trailing,
   });
 
-  final Widget leading;
+  final Widget? leading;
   final String title;
   final String value;
   final List<Point> points;
@@ -65,8 +65,10 @@ class _SidebarTileState extends State<SidebarTile> {
                 padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
                 child: Row(
                   children: [
-                    widget.leading,
-                    const SizedBox(width: 10),
+                    if (widget.leading != null) ...[
+                      widget.leading!,
+                      const SizedBox(width: 10),
+                    ],
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
