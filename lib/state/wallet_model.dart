@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/models.dart';
+import '../services/price_feed.dart';
 import '../services/solana_service.dart';
 
 enum StatusKind { idle, loading, live, error }
@@ -16,10 +17,17 @@ enum SortMode { value, change, name }
 /// Holds balances/prices/metadata, the per-wallet price history, polling
 /// timers, persistence and all derived values the UI renders.
 class WalletModel extends ChangeNotifier {
-  WalletModel(this._svc, this._prefs);
+  WalletModel(this._svc, this._prefs) {
+    _feed.onPrice = _onLivePrice;
+  }
 
   final SolanaService _svc;
   final SharedPreferences _prefs;
+
+  /// Live, push-based price overlay (Coinbase WS) for holdings that map to a
+  /// listed market. Jupiter polling below remains the source of truth for the
+  /// long tail and 24h change; live prices override the headline value/charts.
+  final CoinbasePriceFeed _feed = CoinbasePriceFeed();
 
   // ---- tuning constants (mirror renderer.js) --------------------------------
   static const _maxPoints = 720;
@@ -58,6 +66,21 @@ class WalletModel extends ChangeNotifier {
   // is discarded without one token's request cancelling another's.
   int _chartSeq = 0;
   final Map<String, int> _chartReqToken = {};
+
+  // ---- live price overlay (Coinbase WS) -------------------------------------
+  // Coinbase product (e.g. 'SOL-USD') -> the mints whose price it drives. One
+  // product can back several mints (rare), so this is a list.
+  final Map<String, List<String>> _productToMints = {};
+  // Pending live prices, coalesced and flushed on a timer so a busy market
+  // (BTC can push many ticks/sec) costs at most a few rebuilds per second.
+  final Map<String, double> _livePending = {};
+  Timer? _liveFlush;
+  static const _liveFlushInterval = Duration(milliseconds: 300);
+  // A non-trusted (symbol-mapped) mint's live price is only applied when it sits
+  // within this ratio of Jupiter's last quote — a cheap guard against a scam
+  // token spoofing a major's symbol to inherit its price.
+  static const _corroborateLo = 0.7;
+  static const _corroborateHi = 1.43;
 
   // Sentinel id for the "Portfolio" overview entry in the sidebar.
   static const portfolioId = '__portfolio__';
@@ -333,12 +356,17 @@ class WalletModel extends ChangeNotifier {
     _chartError.clear();
     _chartSeq++; // invalidate any in-flight loads
     _chartReqToken.clear();
+    _productToMints.clear();
+    _livePending.clear();
     _lastList = [];
     _order = [];
     selectedId = portfolioId;
     address = addr;
 
     _prefs.setString(_kAddress, addr);
+
+    // Open the live price socket; subscriptions are filled once holdings load.
+    _feed.start();
 
     // restore saved hidden + history for this wallet
     final rawHidden = _prefs.getString(_kHidden(addr));
@@ -421,10 +449,133 @@ class WalletModel extends ChangeNotifier {
       _meta.addAll(meta);
 
       _applyData(append: true);
+      _syncFeed();
       _setStatus(StatusKind.live, 'Live');
     } catch (e) {
       _setStatus(StatusKind.error, _truncate(_errMsg(e)));
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Live price overlay (Coinbase WebSocket)
+  // ---------------------------------------------------------------------------
+
+  /// (Re)build the live subscription set from the current holdings.
+  ///
+  /// A holding streams live if its symbol maps to an online Coinbase `<SYM>-USD`
+  /// market — either via the curated trusted-mint table or its Jupiter symbol.
+  /// The BTC reference market is always included so the wBTC chart ticks live
+  /// even for wallets that hold no BTC.
+  void _syncFeed() {
+    // Build candidate products from holdings. We don't filter against the
+    // online-product set here — the feed does that at subscribe time, which also
+    // avoids a first-load race where the product list hasn't downloaded yet.
+    // Products that don't exist on Coinbase simply never push a tick.
+    final map = <String, List<String>>{};
+    void add(String mint, String symbol) {
+      final product = '${symbol.toUpperCase()}-USD';
+      (map[product] ??= []).add(mint);
+    }
+
+    for (final b in _balances) {
+      final symbol =
+          CoinbasePriceFeed.trustedMints[b.mint] ?? _meta[b.mint]?.symbol;
+      if (symbol != null && symbol.isNotEmpty) add(b.mint, symbol);
+    }
+    // The BTC chart's mint is never a balance — wire it up explicitly.
+    add(SolanaService.btcMint, 'BTC');
+
+    _productToMints
+      ..clear()
+      ..addAll(map);
+    _feed.setProducts(map.keys.toSet());
+  }
+
+  /// A live tick arrived. Buffer it and schedule a coalesced flush so a flood of
+  /// ticks turns into at most a few rebuilds per second.
+  void _onLivePrice(LivePrice p) {
+    _livePending[p.product] = p.price;
+    _liveFlush ??= Timer(_liveFlushInterval, _flushLive);
+  }
+
+  void _flushLive() {
+    _liveFlush = null;
+    if (_livePending.isEmpty || address.isEmpty) return;
+    final pending = Map<String, double>.from(_livePending);
+    _livePending.clear();
+
+    var changed = false;
+    for (final entry in pending.entries) {
+      final mints = _productToMints[entry.key];
+      if (mints == null) continue;
+      for (final mint in mints) {
+        if (_applyLivePrice(mint, entry.value)) changed = true;
+      }
+    }
+    // Recompute holdings/total from the refreshed prices (no history append —
+    // the sparkline keeps growing on the poll cadence, not per live tick).
+    if (changed) _applyData(append: false);
+  }
+
+  /// Apply a live USD [price] to [mint]. Returns whether anything changed.
+  ///
+  /// Curated trusted mints are applied directly. A symbol-mapped mint is only
+  /// applied when Jupiter already has a corroborating quote within
+  /// [_corroborateLo]–[_corroborateHi], so a spoofed symbol can't hijack a
+  /// major's price. Also live-ticks the forming candle of any matching chart.
+  bool _applyLivePrice(String mint, double price) {
+    final existing = _prices[mint];
+    final trusted = CoinbasePriceFeed.trustedMints.containsKey(mint);
+    if (!trusted) {
+      final jup = existing?.usdPrice;
+      if (jup == null || jup <= 0) return false; // nothing to corroborate against
+      final ratio = price / jup;
+      if (ratio < _corroborateLo || ratio > _corroborateHi) return false;
+    }
+    final tickedChart = _tickChartLastCandle(mint, price);
+    if (existing != null && existing.usdPrice == price) return tickedChart;
+    _prices[mint] = PriceInfo(
+      usdPrice: price,
+      priceChange24h: existing?.priceChange24h,
+    );
+    return true;
+  }
+
+  /// Refine the forming (last) candle of any chart driven by [mint] with the
+  /// live [price] — pulling close to the trade and stretching the wick. The
+  /// 6-month history and the candle's open time are untouched, so the chart's
+  /// series identity is preserved and it keeps following the live edge between
+  /// the slower GeckoTerminal polls. Returns whether a chart was updated.
+  bool _tickChartLastCandle(String mint, double price) {
+    // Chart ids that this mint backs: the mint itself, plus 'SOL' for wSOL.
+    final ids = <String>[];
+    if (_chartById.containsKey(mint)) ids.add(mint);
+    if (mint == _wsol && _chartById.containsKey('SOL')) ids.add('SOL');
+
+    var updated = false;
+    for (final id in ids) {
+      final list = _chartById[id];
+      if (list == null || list.isEmpty) continue;
+      final last = list.last;
+      if (last.close == price && price <= last.high && price >= last.low) {
+        continue; // nothing to change
+      }
+      final refined = Candle(
+        time: last.time,
+        open: last.open,
+        high: price > last.high ? price : last.high,
+        low: price < last.low ? price : last.low,
+        close: price,
+        volume: last.volume,
+      );
+      // New list instance (same first.time) so the chart repaints and the
+      // live-edge follow logic treats it as the same series, not a reload.
+      final copy = List<Candle>.of(list);
+      copy[copy.length - 1] = refined;
+      _chartById[id] = copy;
+      updated = true;
+    }
+    return updated;
   }
 
   Future<void> tickPrices() async {
@@ -607,6 +758,11 @@ class WalletModel extends ChangeNotifier {
     _chartError.clear();
     _chartSeq++; // invalidate any in-flight loads
     _chartReqToken.clear();
+    _productToMints.clear();
+    _livePending.clear();
+    _liveFlush?.cancel();
+    _liveFlush = null;
+    _feed.setProducts({}); // drop all live subscriptions
     _setStatus(StatusKind.idle, 'Idle');
   }
 
@@ -657,6 +813,8 @@ class WalletModel extends ChangeNotifier {
   void dispose() {
     _clearTimers();
     _histTimer?.cancel();
+    _liveFlush?.cancel();
+    _feed.dispose();
     _svc.dispose();
     super.dispose();
   }
