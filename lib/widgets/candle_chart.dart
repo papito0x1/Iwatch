@@ -112,6 +112,10 @@ class _CandleChartState extends State<CandleChart> {
     return w - _Chart.priceAxisWidth;
   }
 
+  /// Width the candles actually occupy — the plot minus the right gutter. Pixel
+  /// ↔ candle-index conversions use this so they line up with the painter.
+  double _candleAreaWidth() => math.max(1.0, _plotWidth() - _Chart.rightPad);
+
   @override
   Widget build(BuildContext context) {
     final cs = widget.candles;
@@ -185,8 +189,9 @@ class _CandleChartState extends State<CandleChart> {
   void _updateHover(Offset pos, List<Candle> cs) {
     final plotW = _plotWidth();
     if (pos.dx < 0 || pos.dx > plotW) return _clearHover();
+    final areaW = _candleAreaWidth();
     final span = _end - _start;
-    final idx = (_start + (pos.dx / plotW) * span).floor().clamp(0, cs.length - 1);
+    final idx = (_start + (pos.dx / areaW) * span).floor().clamp(0, cs.length - 1);
     if (_hoverIndex != idx) setState(() => _hoverIndex = idx);
   }
 
@@ -199,10 +204,10 @@ class _CandleChartState extends State<CandleChart> {
   void _zoomBy(Offset pos, double factor) {
     if (factor == 1.0 || factor <= 0) return;
     final n = widget.candles.length.toDouble();
-    final plotW = _plotWidth();
+    final areaW = _candleAreaWidth();
     final start = _start, end = _end;
     final span = end - start;
-    final frac = (pos.dx / plotW).clamp(0.0, 1.0);
+    final frac = (pos.dx / areaW).clamp(0.0, 1.0);
     final anchor = start + frac * span; // candle index under the cursor
 
     final newSpan = (span * factor).clamp(_minSpan, n);
@@ -220,9 +225,9 @@ class _CandleChartState extends State<CandleChart> {
   void _pan(double dx) {
     if (_isDefaultView) return; // nothing to pan when showing everything
     final n = widget.candles.length.toDouble();
-    final plotW = _plotWidth();
+    final areaW = _candleAreaWidth();
     final span = _end - _start;
-    final d = -(dx / plotW) * span; // drag right => move back in time
+    final d = -(dx / areaW) * span; // drag right => move back in time
     var (newStart, newEnd) = _clampWindow(_start + d, _end + d, n);
     setState(() {
       _viewStart = newStart;
@@ -300,6 +305,9 @@ class _Chart extends StatelessWidget {
 
   static const priceAxisWidth = 62.0;
   static const timeAxisHeight = 20.0;
+  // Empty gutter kept to the right of the newest candle (between it and the
+  // price axis) so the live bar has room to breathe, TradingView-style.
+  static const rightPad = 22.0;
 
   @override
   Widget build(BuildContext context) {
@@ -451,7 +459,11 @@ class _CandlePainter extends CustomPainter {
     final priceH = plotH - volH - _bandGap; // price candles live in [0, priceH]
 
     final span = (end - start) <= 0 ? n.toDouble() : end - start;
-    final slot = plotW / span;
+    // Candles fill the plot minus a right gutter; the grid and axes still span
+    // the full width. Dividing the candle area by the span here propagates the
+    // gutter to every candle-positioned element (bodies, wicks, time labels,
+    // crosshair) since they all derive from [slot].
+    final slot = (plotW - _Chart.rightPad) / span;
     // Visible candle index range (with a little overscan).
     final firstVis = math.max(0, start.floor() - 1);
     final lastVis = math.min(n - 1, end.ceil());

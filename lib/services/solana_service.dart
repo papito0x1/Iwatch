@@ -354,7 +354,7 @@ class SolanaService {
     // hard (~30 req/min). One request of up to 1000 candles is plenty for the
     // chart and keeps us to a single call per load (pool lookup is cached), so a
     // few range/token switches don't trip the limiter.
-    final bucketSec = _bucketSeconds(range);
+    final bucketSec = range.bucketSeconds;
     final totalBuckets = (DateTime.now().millisecondsSinceEpoch ~/ 1000 -
             sixMonthsAgo ~/ 1000) ~/
         bucketSec;
@@ -438,15 +438,6 @@ class SolanaService {
       ..sort((a, b) => a.time.compareTo(b.time));
     return candles;
   }
-
-  /// Duration of one candle bucket in seconds.
-  static int _bucketSeconds(ChartRange r) => switch (r) {
-        ChartRange.m5 => 5 * 60,
-        ChartRange.m15 => 15 * 60,
-        ChartRange.h1 => 3600,
-        ChartRange.h4 => 4 * 3600,
-        ChartRange.d1 => 86400,
-      };
 
   void dispose() => _client.close();
 }

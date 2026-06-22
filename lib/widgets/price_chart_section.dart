@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -184,8 +186,70 @@ class _RangeSelector extends StatelessWidget {
             child: CircularProgressIndicator(
                 strokeWidth: 2, color: AppColors.muted),
           ),
+        const Spacer(),
+        // Time left until the current candle closes and the next one opens.
+        _NextCandleCountdown(range: range),
       ],
     );
+  }
+}
+
+/// A live "time to next candle" countdown, shown at the right of the range
+/// selector. Counts down within the selected timeframe's bucket and resets when
+/// a new candle opens (which [advanceCandles] prints at the same instant).
+class _NextCandleCountdown extends StatefulWidget {
+  const _NextCandleCountdown({required this.range});
+
+  final ChartRange range;
+
+  @override
+  State<_NextCandleCountdown> createState() => _NextCandleCountdownState();
+}
+
+class _NextCandleCountdownState extends State<_NextCandleCountdown> {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bucket = widget.range.bucketSeconds;
+    final nowSec = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    // Seconds until the next epoch-aligned bucket boundary (1..bucket).
+    final remaining = bucket - (nowSec % bucket);
+    return Tooltip(
+      message: 'Time to next candle',
+      child: Text(
+        _fmt(remaining),
+        style: const TextStyle(
+          color: AppColors.muted,
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          fontFeatures: [FontFeature.tabularFigures()],
+        ),
+      ),
+    );
+  }
+
+  static String _fmt(int s) {
+    final h = s ~/ 3600;
+    final m = (s % 3600) ~/ 60;
+    final sec = s % 60;
+    final mm = m.toString().padLeft(2, '0');
+    final ss = sec.toString().padLeft(2, '0');
+    return h > 0 ? '$h:$mm:$ss' : '$mm:$ss';
   }
 }
 

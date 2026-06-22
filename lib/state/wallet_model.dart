@@ -197,6 +197,10 @@ class WalletModel extends ChangeNotifier {
   /// bar tracks the market in near real time. Updates in place (no spinner, no
   /// error clobber) and preserves the user's zoom/pan.
   Future<void> _tickChart() async {
+    // Advance any chart whose candle period has elapsed before fetching, so the
+    // next candle prints right at the boundary instead of only when Gecko's
+    // data catches up.
+    _rolloverLoadedCharts();
     final id = selectedId;
     // The BTC chart ticks alongside the selected token's chart; both are small
     // single requests, so we run them concurrently and stay well under
@@ -541,41 +545,57 @@ class WalletModel extends ChangeNotifier {
     return true;
   }
 
-  /// Refine the forming (last) candle of any chart driven by [mint] with the
-  /// live [price] — pulling close to the trade and stretching the wick. The
-  /// 6-month history and the candle's open time are untouched, so the chart's
-  /// series identity is preserved and it keeps following the live edge between
-  /// the slower GeckoTerminal polls. Returns whether a chart was updated.
+  /// Apply a live [price] to any chart driven by [mint]: open a fresh candle if
+  /// the clock has crossed into a new bucket, otherwise refine the forming one.
+  ///
+  /// The 6-month history and earlier candles' open times are untouched, so the
+  /// chart's series identity is preserved and it keeps following the live edge
+  /// between the slower GeckoTerminal polls. Returns whether a chart was updated.
   bool _tickChartLastCandle(String mint, double price) {
     // Chart ids that this mint backs: the mint itself, plus 'SOL' for wSOL.
     final ids = <String>[];
     if (_chartById.containsKey(mint)) ids.add(mint);
     if (mint == _wsol && _chartById.containsKey('SOL')) ids.add('SOL');
 
+    final nowSec = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     var updated = false;
     for (final id in ids) {
       final list = _chartById[id];
       if (list == null || list.isEmpty) continue;
-      final last = list.last;
-      if (last.close == price && price <= last.high && price >= last.low) {
-        continue; // nothing to change
-      }
-      final refined = Candle(
-        time: last.time,
-        open: last.open,
-        high: price > last.high ? price : last.high,
-        low: price < last.low ? price : last.low,
-        close: price,
-        volume: last.volume,
-      );
-      // New list instance (same first.time) so the chart repaints and the
-      // live-edge follow logic treats it as the same series, not a reload.
-      final copy = List<Candle>.of(list);
-      copy[copy.length - 1] = refined;
-      _chartById[id] = copy;
-      updated = true;
+      if (_rolloverOrRefine(id, list, nowSec, price)) updated = true;
     }
     return updated;
+  }
+
+  /// Advance loaded charts that have crossed into a new candle bucket, even when
+  /// no live trade has arrived — so a token without a Coinbase market still
+  /// prints a new candle the moment its timeframe elapses (e.g. every 5 min on
+  /// the 5m range), seeded flat from the last close. Runs on the chart timer;
+  /// GeckoTerminal fills the real OHLC on its next poll, and a WS price refines
+  /// it sooner for listed markets.
+  void _rolloverLoadedCharts() {
+    final nowSec = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    var changed = false;
+    // Snapshot keys: _rolloverOrRefine replaces map values as it goes.
+    for (final id in _chartById.keys.toList()) {
+      final list = _chartById[id];
+      if (list == null || list.isEmpty) continue;
+      // price: null → seed/refine flat from the last close (no live trade).
+      if (_rolloverOrRefine(id, list, nowSec, null)) changed = true;
+    }
+    if (changed) notifyListeners();
+  }
+
+  /// Advance one chart [id] with an optional live [price] at [nowSec] via the
+  /// pure [advanceCandles]. Writes the new series (same first.time, so the chart
+  /// repaints as the same series) and returns whether anything changed.
+  bool _rolloverOrRefine(String id, List<Candle> list, int nowSec, double? price) {
+    final range = _rangeById[id];
+    if (range == null) return false;
+    final next = advanceCandles(list, nowSec, range.bucketSeconds, price);
+    if (next == null) return false;
+    _chartById[id] = next;
+    return true;
   }
 
   Future<void> tickPrices() async {
@@ -662,6 +682,16 @@ class WalletModel extends ChangeNotifier {
     }
   }
 
+  /// Move the most recent point's value to [y] in place (keeping its time), so a
+  /// live tick nudges the chart's right edge without growing the series. No-op
+  /// until the first real point has been appended.
+  void _retipPoint(List<Point>? arr, double y) {
+    if (arr == null || arr.isEmpty) return;
+    final last = arr.last;
+    if (last.y == y) return;
+    arr[arr.length - 1] = Point(last.x, y);
+  }
+
   void _applyData({required bool append}) {
     final list = _enrich();
     final total = list.fold(0.0, (s, t) => s + t.value);
@@ -689,6 +719,15 @@ class WalletModel extends ChangeNotifier {
         _pushPoint(arr, now, t.value);
       }
       _persistHistory();
+    } else {
+      // Live tick (no new point): pull the latest point up/down to the current
+      // value so the portfolio area chart and the sidebar sparklines track the
+      // market between polls, mirroring how the candle's forming bar refines.
+      // No append → history stays bounded and the persisted series is unchanged.
+      _retipPoint(_historyTotal, total);
+      for (final t in list) {
+        _retipPoint(_historyById[t.id], t.value);
+      }
     }
 
     _lastUpdatedMs = DateTime.now().millisecondsSinceEpoch;
