@@ -53,7 +53,28 @@ class _StatusPillState extends State<StatusPill>
   late final AnimationController _pulse = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 1800),
-  )..repeat();
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _syncPulse();
+  }
+
+  @override
+  void didUpdateWidget(StatusPill old) {
+    super.didUpdateWidget(old);
+    if (old.kind != widget.kind) _syncPulse();
+  }
+
+  // Only spin the ticker while live — no point animating an idle/error dot.
+  void _syncPulse() {
+    if (widget.kind == StatusKind.live) {
+      if (!_pulse.isAnimating) _pulse.repeat();
+    } else {
+      _pulse.stop();
+    }
+  }
 
   @override
   void dispose() {
@@ -88,25 +109,27 @@ class _StatusPillState extends State<StatusPill>
         mainAxisSize: MainAxisSize.min,
         children: [
           live
-              ? AnimatedBuilder(
-                  animation: _pulse,
-                  builder: (_, _) {
-                    final t = _pulse.value;
-                    return Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: _color,
-                        boxShadow: [
-                          BoxShadow(
-                            color: _color.withValues(alpha: (1 - t) * 0.5),
-                            spreadRadius: t * 6,
-                          ),
-                        ],
-                      ),
-                    );
-                  },
+              ? RepaintBoundary(
+                  child: AnimatedBuilder(
+                    animation: _pulse,
+                    builder: (_, _) {
+                      final t = _pulse.value;
+                      return Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: _color,
+                          boxShadow: [
+                            BoxShadow(
+                              color: _color.withValues(alpha: (1 - t) * 0.5),
+                              spreadRadius: t * 6,
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
                 )
               : Container(
                   width: 8,

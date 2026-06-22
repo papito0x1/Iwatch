@@ -7,6 +7,42 @@ import '../models/candle.dart';
 import '../theme.dart';
 import '../utils/format.dart';
 
+/// Computes the chart viewport (start, end as fractional candle indices) after
+/// the candle list changes. `(null, null)` means the default fit-all view.
+///
+/// Rules:
+/// - Series change (token/range switch — different first timestamp, or either
+///   list empty): reset to the default view.
+/// - Same series with new bars appended while zoomed: if the view was parked at
+///   the live edge, follow the newest bar keeping the same zoom span; otherwise
+///   (panned back into history) leave it on the same bars.
+/// - Otherwise: unchanged.
+///
+/// Pure (no widget state) so the live-follow behaviour can be unit-tested.
+@visibleForTesting
+(double?, double?) nextViewport({
+  required double? start,
+  required double? end,
+  required List<Candle> oldCandles,
+  required List<Candle> newCandles,
+}) {
+  final seriesChanged = oldCandles.isEmpty ||
+      newCandles.isEmpty ||
+      oldCandles.first.time != newCandles.first.time;
+  if (seriesChanged) return (null, null);
+
+  if (end != null && newCandles.length != oldCandles.length) {
+    final oldN = oldCandles.length.toDouble();
+    if (end >= oldN - 0.5) {
+      // Was at the live edge — follow it, preserving the visible span.
+      final span = end - (start ?? 0);
+      final newN = newCandles.length.toDouble();
+      return (math.max(0, newN - span), newN);
+    }
+  }
+  return (start, end);
+}
+
 /// A TradingView / jup.ag-style candlestick chart: OHLC candles with wicks in
 /// the upper band, a volume histogram in a separate lower band, a right-hand
 /// price axis with a live last-price tag, time labels along the bottom, an
@@ -44,22 +80,24 @@ class _CandleChartState extends State<CandleChart> {
   // range). Candles only reload on a range change, so indices stay valid.
   double? _viewStart;
   double? _viewEnd;
+  double _panZoomScale = 1.0; // cumulative scale during a trackpad pinch
 
   static const _minSpan = 8.0; // most-zoomed-in: at least this many candles
 
   @override
   void didUpdateWidget(CandleChart old) {
     super.didUpdateWidget(old);
-    // Reset the viewport only when the *series* changes (token/range switch),
-    // not on live ticks that update or append candles to the same series — those
-    // keep the same first timestamp, so the user's zoom/pan is preserved.
-    final oldCs = old.candles, newCs = widget.candles;
-    final seriesChanged = oldCs.isEmpty ||
-        newCs.isEmpty ||
-        oldCs.first.time != newCs.first.time; // token/range switch
-    if (seriesChanged) {
-      _viewStart = null;
-      _viewEnd = null;
+    final next = nextViewport(
+        start: _viewStart,
+        end: _viewEnd,
+        oldCandles: old.candles,
+        newCandles: widget.candles);
+    _viewStart = next.$1;
+    _viewEnd = next.$2;
+    // Drop the crosshair when the series itself changed (token/range switch).
+    if (old.candles.isEmpty ||
+        widget.candles.isEmpty ||
+        old.candles.first.time != widget.candles.first.time) {
       _hoverIndex = null;
     }
   }
@@ -90,7 +128,25 @@ class _CandleChartState extends State<CandleChart> {
       height: widget.height,
       child: Listener(
         onPointerSignal: (e) {
-          if (e is PointerScrollEvent) _zoom(e.localPosition, e.scrollDelta.dy);
+          // Mouse wheel (and trackpad two-finger scroll on some platforms).
+          if (e is PointerScrollEvent) {
+            _zoomBy(e.localPosition, e.scrollDelta.dy < 0 ? 0.85 : 1 / 0.85);
+          } else if (e is PointerScaleEvent) {
+            // Trackpad pinch delivered as a scale signal (macOS/web).
+            _zoomBy(e.localPosition, e.scale != 0 ? 1 / e.scale : 1.0);
+          }
+        },
+        // Trackpad gestures (Linux/Wayland/X11): pinch to zoom, two-finger
+        // horizontal swipe to pan. This is what laptops actually send.
+        onPointerPanZoomStart: (_) => _panZoomScale = 1.0,
+        onPointerPanZoomUpdate: (e) {
+          final ratio = _panZoomScale == 0 ? 1.0 : e.scale / _panZoomScale;
+          _panZoomScale = e.scale;
+          if ((ratio - 1).abs() > 0.002) {
+            _zoomBy(e.localPosition, 1 / ratio); // pinch
+          } else if (e.panDelta.dx.abs() > e.panDelta.dy.abs()) {
+            _pan(e.panDelta.dx); // two-finger horizontal swipe
+          }
         },
         child: MouseRegion(
           cursor: SystemMouseCursors.precise,
@@ -138,7 +194,10 @@ class _CandleChartState extends State<CandleChart> {
     if (_hoverIndex != null) setState(() => _hoverIndex = null);
   }
 
-  void _zoom(Offset pos, double scrollDy) {
+  /// Zoom around [pos] by [factor]: <1 zooms in (fewer candles), >1 zooms out.
+  /// Used by the mouse wheel, trackpad pinch, and trackpad pinch-signal.
+  void _zoomBy(Offset pos, double factor) {
+    if (factor == 1.0 || factor <= 0) return;
     final n = widget.candles.length.toDouble();
     final plotW = _plotWidth();
     final start = _start, end = _end;
@@ -146,10 +205,7 @@ class _CandleChartState extends State<CandleChart> {
     final frac = (pos.dx / plotW).clamp(0.0, 1.0);
     final anchor = start + frac * span; // candle index under the cursor
 
-    // Scroll up (negative dy) zooms in; down zooms out.
-    final factor = scrollDy < 0 ? 0.85 : 1 / 0.85;
-    var newSpan = (span * factor).clamp(_minSpan, n);
-
+    final newSpan = (span * factor).clamp(_minSpan, n);
     if (newSpan >= n) return _reset(); // fully zoomed out => default view
 
     var newStart = anchor - frac * newSpan;
@@ -251,12 +307,14 @@ class _Chart extends StatelessWidget {
     return Stack(
       children: [
         Positioned.fill(
-          child: CustomPaint(
-            painter: _CandlePainter(
-              candles: candles,
-              hoverIndex: hoverIndex,
-              start: start,
-              end: end,
+          child: RepaintBoundary(
+            child: CustomPaint(
+              painter: _CandlePainter(
+                candles: candles,
+                hoverIndex: hoverIndex,
+                start: start,
+                end: end,
+              ),
             ),
           ),
         ),
