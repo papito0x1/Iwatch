@@ -80,6 +80,7 @@ class _CandleChartState extends State<CandleChart> {
   // range). Candles only reload on a range change, so indices stay valid.
   double? _viewStart;
   double? _viewEnd;
+  double _panZoomScale = 1.0; // cumulative scale during a trackpad pinch
 
   static const _minSpan = 8.0; // most-zoomed-in: at least this many candles
 
@@ -127,7 +128,25 @@ class _CandleChartState extends State<CandleChart> {
       height: widget.height,
       child: Listener(
         onPointerSignal: (e) {
-          if (e is PointerScrollEvent) _zoom(e.localPosition, e.scrollDelta.dy);
+          // Mouse wheel (and trackpad two-finger scroll on some platforms).
+          if (e is PointerScrollEvent) {
+            _zoomBy(e.localPosition, e.scrollDelta.dy < 0 ? 0.85 : 1 / 0.85);
+          } else if (e is PointerScaleEvent) {
+            // Trackpad pinch delivered as a scale signal (macOS/web).
+            _zoomBy(e.localPosition, e.scale != 0 ? 1 / e.scale : 1.0);
+          }
+        },
+        // Trackpad gestures (Linux/Wayland/X11): pinch to zoom, two-finger
+        // horizontal swipe to pan. This is what laptops actually send.
+        onPointerPanZoomStart: (_) => _panZoomScale = 1.0,
+        onPointerPanZoomUpdate: (e) {
+          final ratio = _panZoomScale == 0 ? 1.0 : e.scale / _panZoomScale;
+          _panZoomScale = e.scale;
+          if ((ratio - 1).abs() > 0.002) {
+            _zoomBy(e.localPosition, 1 / ratio); // pinch
+          } else if (e.panDelta.dx.abs() > e.panDelta.dy.abs()) {
+            _pan(e.panDelta.dx); // two-finger horizontal swipe
+          }
         },
         child: MouseRegion(
           cursor: SystemMouseCursors.precise,
@@ -175,7 +194,10 @@ class _CandleChartState extends State<CandleChart> {
     if (_hoverIndex != null) setState(() => _hoverIndex = null);
   }
 
-  void _zoom(Offset pos, double scrollDy) {
+  /// Zoom around [pos] by [factor]: <1 zooms in (fewer candles), >1 zooms out.
+  /// Used by the mouse wheel, trackpad pinch, and trackpad pinch-signal.
+  void _zoomBy(Offset pos, double factor) {
+    if (factor == 1.0 || factor <= 0) return;
     final n = widget.candles.length.toDouble();
     final plotW = _plotWidth();
     final start = _start, end = _end;
@@ -183,10 +205,7 @@ class _CandleChartState extends State<CandleChart> {
     final frac = (pos.dx / plotW).clamp(0.0, 1.0);
     final anchor = start + frac * span; // candle index under the cursor
 
-    // Scroll up (negative dy) zooms in; down zooms out.
-    final factor = scrollDy < 0 ? 0.85 : 1 / 0.85;
-    var newSpan = (span * factor).clamp(_minSpan, n);
-
+    final newSpan = (span * factor).clamp(_minSpan, n);
     if (newSpan >= n) return _reset(); // fully zoomed out => default view
 
     var newStart = anchor - frac * newSpan;
