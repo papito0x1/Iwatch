@@ -15,6 +15,10 @@ class SolanaService {
   static const tokenProgram = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
   static const token2022Program = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
   static const wsolMint = 'So11111111111111111111111111111111111111112';
+  // Wormhole-wrapped BTC on Solana — has a deep USDC pool (2023) so GeckoTerminal
+  // OHLCV serves USD-denominated BTC candles. Used by the BTC chart on the token
+  // page; the wallet need not hold any wBTC.
+  static const btcMint = '3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh';
 
   static const _jupSearch = 'https://lite-api.jup.ag/tokens/v2/search';
   static const _jupPrice = 'https://lite-api.jup.ag/price/v3';

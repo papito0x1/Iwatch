@@ -81,7 +81,29 @@ class TokenDetail extends StatelessWidget {
           up: up,
         ),
         const SizedBox(height: 24),
-        PriceChartSection(tokenId: row.id),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            // Two candle charts need width to be readable; stack them on
+            // narrow windows and set them side-by-side otherwise.
+            const sideBySide = 820.0;
+            final pair = Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(child: PriceChartSection(tokenId: row.id)),
+                const SizedBox(width: 16),
+                const Expanded(child: BtcChartSection()),
+              ],
+            );
+            if (constraints.maxWidth >= sideBySide) return pair;
+            return Column(
+              children: [
+                PriceChartSection(tokenId: row.id),
+                const SizedBox(height: 24),
+                const BtcChartSection(),
+              ],
+            );
+          },
+        ),
         const SizedBox(height: 24),
         CollapsibleSection(
           title: 'Details',
