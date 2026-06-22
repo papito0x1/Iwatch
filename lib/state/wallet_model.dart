@@ -47,6 +47,15 @@ class WalletModel extends ChangeNotifier {
   bool _hiddenInit = false;
   List<TokenRow> _lastList = [];
 
+  // ---- price chart (OHLCV) --------------------------------------------------
+  // Keyed by tokenId so the chart survives reselection and range changes are
+  // cheap; a request token prevents stale loads from overwriting a newer one.
+  final Map<String, List<Candle>> _chartById = {};
+  final Map<String, ChartRange> _rangeById = {};
+  final Set<String> _chartLoading = {};
+  final Map<String, String?> _chartError = {};
+  int _chartReqSeq = 0;
+
   // Sentinel id for the "Portfolio" overview entry in the sidebar.
   static const portfolioId = '__portfolio__';
   String selectedId = portfolioId;
@@ -111,6 +120,57 @@ class WalletModel extends ChangeNotifier {
   bool isHidden(String id) => _hidden.contains(id);
 
   List<Point> historyFor(String id) => _historyById[id] ?? const [];
+
+  /// Chart candles for a token at its currently-selected range.
+  List<Candle> chartFor(String id) => _chartById[id] ?? const [];
+
+  ChartRange chartRangeFor(String id) => _rangeById[id] ?? ChartRange.h1;
+
+  bool chartLoadingFor(String id) => _chartLoading.contains(id);
+
+  String? chartErrorFor(String id) => _chartError[id];
+
+  /// Load (or reload) OHLCV candles for a token at [range]. A request sequence
+  /// guards against an older fetch landing after a newer one (e.g. rapid range
+  /// switches). No-op if already cached for this id+range.
+  Future<void> loadChart(String id, ChartRange range) async {
+    final mint = rowById(id)?.mint ?? (id == 'SOL' ? SolanaService.wsolMint : id);
+    if (mint.isEmpty) return;
+
+    if (_chartById[id] != null && _rangeById[id] == range) return;
+    final token = ++_chartReqSeq;
+    _rangeById[id] = range;
+    _chartLoading.add(id);
+    _chartError[id] = null;
+    notifyListeners();
+
+    try {
+      final candles = await _svc.getCandles(mint: mint, range: range);
+      if (token != _chartReqSeq) return; // a newer request superseded us
+      _chartById[id] = candles;
+      _chartError[id] = candles.isEmpty ? 'No chart data available.' : null;
+    } catch (e) {
+      if (token != _chartReqSeq) return;
+      _chartError[id] = _truncate(_errMsg(e));
+    } finally {
+      if (token == _chartReqSeq) {
+        _chartLoading.remove(id);
+        notifyListeners();
+      }
+    }
+  }
+
+  /// Refresh the chart for [id] at its current range, bypassing the cache.
+  Future<void> refreshChart(String id) async {
+    _chartById.remove(id);
+    _rangeById.remove(id); // force a full reload (picks up pool fix too)
+    await loadChart(id, ChartRange.h1);
+  }
+
+  void setChartRange(String id, ChartRange range) {
+    if (_rangeById[id] == range) return;
+    loadChart(id, range);
+  }
 
   /// Sidebar token rows, in the stable display order.
   List<TokenRow> get orderedVisible {
@@ -203,6 +263,11 @@ class WalletModel extends ChangeNotifier {
     _prices.clear();
     _historyTotal.clear();
     _historyById.clear();
+    _chartById.clear();
+    _rangeById.clear();
+    _chartLoading.clear();
+    _chartError.clear();
+    _chartReqSeq++;
     _lastList = [];
     _order = [];
     selectedId = portfolioId;
@@ -475,6 +540,11 @@ class WalletModel extends ChangeNotifier {
     _meta.clear();
     _historyTotal.clear();
     _historyById.clear();
+    _chartById.clear();
+    _rangeById.clear();
+    _chartLoading.clear();
+    _chartError.clear();
+    _chartReqSeq++;
     _setStatus(StatusKind.idle, 'Idle');
   }
 

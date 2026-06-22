@@ -21,6 +21,68 @@ class SectionHeader extends StatelessWidget {
   }
 }
 
+/// A section with a bold header that expands/collapses its body when tapped.
+/// Collapsed by default. Matches [SectionHeader]'s look with a chevron added.
+class CollapsibleSection extends StatefulWidget {
+  const CollapsibleSection({
+    super.key,
+    required this.title,
+    required this.child,
+    this.initiallyExpanded = false,
+  });
+
+  final String title;
+  final Widget child;
+  final bool initiallyExpanded;
+
+  @override
+  State<CollapsibleSection> createState() => _CollapsibleSectionState();
+}
+
+class _CollapsibleSectionState extends State<CollapsibleSection> {
+  late bool _expanded = widget.initiallyExpanded;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          onTap: () => setState(() => _expanded = !_expanded),
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.only(top: 4, bottom: 12),
+            child: Row(
+              children: [
+                Text(widget.title,
+                    style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.text)),
+                const SizedBox(width: 4),
+                AnimatedRotation(
+                  turns: _expanded ? 0.25 : 0.0,
+                  duration: const Duration(milliseconds: 180),
+                  child: const Icon(Icons.chevron_right,
+                      size: 22, color: AppColors.muted),
+                ),
+              ],
+            ),
+          ),
+        ),
+        AnimatedCrossFade(
+          firstChild: const SizedBox(width: double.infinity),
+          secondChild: SizedBox(width: double.infinity, child: widget.child),
+          crossFadeState:
+              _expanded ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+          duration: const Duration(milliseconds: 180),
+          sizeCurve: Curves.easeInOut,
+        ),
+      ],
+    );
+  }
+}
+
 /// A boxed card holding a large area chart with a label + value beneath,
 /// mirroring the "Total Usage / 71%" card in GNOME Resources.
 class ChartCard extends StatelessWidget {

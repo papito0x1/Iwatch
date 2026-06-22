@@ -29,6 +29,11 @@ class AppColors {
   static const down = Color(0xFFED333B);
   static const warn = Color(0xFFE5A50A);
 
+  // trading chart (near-black panel, TradingView/jup.ag style)
+  static const chartBg = Color(0xFF0E0F14);
+  static const chartGrid = Color(0x0DFFFFFF); // faint grid lines
+  static const chartAxis = Color(0xFF6E6E78); // axis label grey
+
   static const brandGradient = LinearGradient(
     begin: Alignment.topLeft,
     end: Alignment.bottomRight,

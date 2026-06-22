@@ -1,5 +1,7 @@
 // Data models for the Solana Wallet Tracker.
 
+export 'candle.dart';
+
 /// A raw on-chain balance entry (SOL or an SPL / Token-2022 mint).
 class Balance {
   final String id; // 'SOL' for native, otherwise the mint
