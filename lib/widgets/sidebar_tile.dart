@@ -18,10 +18,12 @@ class SidebarTile extends StatefulWidget {
     required this.selected,
     required this.onTap,
     this.trailing,
+    this.titleStyle,
   });
 
   final Widget? leading;
   final String title;
+  final TextStyle? titleStyle;
   final String value;
   final List<Point> points;
   final bool up;
@@ -76,8 +78,10 @@ class _SidebarTileState extends State<SidebarTile> {
                           Text(widget.title,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.w600, fontSize: 14)),
+                              style: widget.titleStyle ??
+                                  const TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 14)),
                           const SizedBox(height: 1),
                           Text(widget.value,
                               maxLines: 1,
