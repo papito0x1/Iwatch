@@ -31,7 +31,8 @@ class HomeScreen extends StatelessWidget {
         isPortfolio ? 'Portfolio' : (selectedRow?.symbol ?? 'Portfolio');
     final String pageSubtitle = isPortfolio
         ? shortAddr(model.address)
-        : (selectedRow?.name ?? '');
+        // (selectedRow?.name ?? '');
+        : '';
 
     return Scaffold(
       backgroundColor: AppColors.windowBg,
