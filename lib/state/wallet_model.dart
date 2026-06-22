@@ -47,6 +47,18 @@ class WalletModel extends ChangeNotifier {
   bool _hiddenInit = false;
   List<TokenRow> _lastList = [];
 
+  // ---- price chart (OHLCV) --------------------------------------------------
+  // Keyed by tokenId so the chart survives reselection and range changes are
+  // cheap; a request token prevents stale loads from overwriting a newer one.
+  final Map<String, List<Candle>> _chartById = {};
+  final Map<String, ChartRange> _rangeById = {};
+  final Set<String> _chartLoading = {};
+  final Map<String, String?> _chartError = {};
+  // Monotonic token source plus the current token per tokenId, so a stale load
+  // is discarded without one token's request cancelling another's.
+  int _chartSeq = 0;
+  final Map<String, int> _chartReqToken = {};
+
   // Sentinel id for the "Portfolio" overview entry in the sidebar.
   static const portfolioId = '__portfolio__';
   String selectedId = portfolioId;
@@ -66,6 +78,12 @@ class WalletModel extends ChangeNotifier {
   Timer? _balanceTimer;
   Timer? _countdownTimer;
   Timer? _histTimer;
+  Timer? _chartTimer;
+
+  /// How often the selected token's chart polls for fresh candles. Kept short
+  /// for a near-live last candle; each poll is one tiny request (last few
+  /// candles only) so it stays well under GeckoTerminal's keyless rate limit.
+  static const _chartLiveInterval = Duration(seconds: 15);
 
   // ---- prefs keys (mirror the LS map) ---------------------------------------
   static const _kAddress = 'swt.address';
@@ -111,6 +129,105 @@ class WalletModel extends ChangeNotifier {
   bool isHidden(String id) => _hidden.contains(id);
 
   List<Point> historyFor(String id) => _historyById[id] ?? const [];
+
+  /// Chart candles for a token at its currently-selected range.
+  List<Candle> chartFor(String id) => _chartById[id] ?? const [];
+
+  ChartRange chartRangeFor(String id) => _rangeById[id] ?? ChartRange.h1;
+
+  bool chartLoadingFor(String id) => _chartLoading.contains(id);
+
+  String? chartErrorFor(String id) => _chartError[id];
+
+  /// Load (or reload) OHLCV candles for a token at [range]. A request sequence
+  /// guards against an older fetch landing after a newer one (e.g. rapid range
+  /// switches). No-op if already cached for this id+range.
+  Future<void> loadChart(String id, ChartRange range) async {
+    final mint = rowById(id)?.mint ?? (id == 'SOL' ? SolanaService.wsolMint : id);
+    if (mint.isEmpty) return;
+
+    if (_chartById[id] != null && _rangeById[id] == range) return;
+    final token = ++_chartSeq;
+    _chartReqToken[id] = token;
+    _rangeById[id] = range;
+    _chartLoading.add(id);
+    _chartError[id] = null;
+    notifyListeners();
+
+    try {
+      final candles = await _svc.getCandles(mint: mint, range: range);
+      if (_chartReqToken[id] != token) return; // superseded by a newer load
+      _chartById[id] = candles;
+      _chartError[id] = candles.length < 2 ? 'No chart data available.' : null;
+    } catch (e) {
+      if (_chartReqToken[id] != token) return;
+      _chartError[id] = _truncate(_errMsg(e));
+    } finally {
+      if (_chartReqToken[id] == token) {
+        _chartLoading.remove(id);
+        notifyListeners();
+      }
+    }
+  }
+
+  /// Refresh the chart for [id] at its current range, bypassing the cache.
+  Future<void> refreshChart(String id) async {
+    _chartById.remove(id);
+    _rangeById.remove(id); // force a full reload (picks up pool fix too)
+    await loadChart(id, ChartRange.h1);
+  }
+
+  /// Live tick: silently top up the *selected* token's chart with the latest
+  /// few candles so the last bar tracks the market in near real time. Updates
+  /// in place (no spinner, no error clobber) and preserves the user's zoom/pan.
+  Future<void> _tickChart() async {
+    final id = selectedId;
+    if (id == portfolioId) return;
+    final existing = _chartById[id];
+    if (existing == null || existing.isEmpty) return; // initial load handles it
+    if (_chartLoading.contains(id)) return; // a full load is already running
+    final range = _rangeById[id];
+    if (range == null) return;
+    final mint = rowById(id)?.mint ?? (id == 'SOL' ? SolanaService.wsolMint : id);
+    if (mint.isEmpty) return;
+
+    try {
+      final recent =
+          await _svc.getRecentCandles(mint: mint, range: range, count: 4);
+      if (recent.isEmpty) return;
+      // Bail if the user moved on (different token/range) while we fetched.
+      if (selectedId != id || _rangeById[id] != range) return;
+      final cur = _chartById[id];
+      if (cur == null || cur.isEmpty) return;
+
+      // Merge by timestamp: replaces the in-progress last bar, appends new ones.
+      final byTime = {for (final c in cur) c.time: c};
+      var changed = false;
+      for (final c in recent) {
+        final prev = byTime[c.time];
+        if (prev == null ||
+            prev.close != c.close ||
+            prev.high != c.high ||
+            prev.low != c.low ||
+            prev.volume != c.volume) {
+          byTime[c.time] = c;
+          changed = true;
+        }
+      }
+      if (!changed) return;
+      final merged = byTime.values.toList()
+        ..sort((a, b) => a.time.compareTo(b.time));
+      _chartById[id] = merged;
+      notifyListeners();
+    } catch (_) {
+      // Silent: keep the existing candles on a transient failure.
+    }
+  }
+
+  void setChartRange(String id, ChartRange range) {
+    if (_rangeById[id] == range) return;
+    loadChart(id, range);
+  }
 
   /// Sidebar token rows, in the stable display order.
   List<TokenRow> get orderedVisible {
@@ -203,6 +320,12 @@ class WalletModel extends ChangeNotifier {
     _prices.clear();
     _historyTotal.clear();
     _historyById.clear();
+    _chartById.clear();
+    _rangeById.clear();
+    _chartLoading.clear();
+    _chartError.clear();
+    _chartSeq++; // invalidate any in-flight loads
+    _chartReqToken.clear();
     _lastList = [];
     _order = [];
     selectedId = portfolioId;
@@ -254,9 +377,11 @@ class WalletModel extends ChangeNotifier {
     _priceTimer?.cancel();
     _balanceTimer?.cancel();
     _countdownTimer?.cancel();
+    _chartTimer?.cancel();
     _priceTimer = null;
     _balanceTimer = null;
     _countdownTimer = null;
+    _chartTimer = null;
   }
 
   void _startTimers() {
@@ -267,6 +392,8 @@ class WalletModel extends ChangeNotifier {
         Duration(seconds: balanceInterval), (_) => refreshBalances());
     _countdownTimer =
         Timer.periodic(const Duration(seconds: 1), (_) => notifyListeners());
+    _chartTimer =
+        Timer.periodic(_chartLiveInterval, (_) => _tickChart());
     _nextTickAt =
         DateTime.now().millisecondsSinceEpoch + priceInterval * 1000;
   }
@@ -475,6 +602,12 @@ class WalletModel extends ChangeNotifier {
     _meta.clear();
     _historyTotal.clear();
     _historyById.clear();
+    _chartById.clear();
+    _rangeById.clear();
+    _chartLoading.clear();
+    _chartError.clear();
+    _chartSeq++; // invalidate any in-flight loads
+    _chartReqToken.clear();
     _setStatus(StatusKind.idle, 'Idle');
   }
 

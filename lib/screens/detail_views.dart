@@ -6,6 +6,7 @@ import '../state/wallet_model.dart';
 import '../theme.dart';
 import '../utils/format.dart';
 import '../widgets/common.dart';
+import '../widgets/price_chart_section.dart';
 import '../widgets/sections.dart';
 
 EdgeInsets _bodyPadding(BuildContext context) =>
@@ -80,32 +81,39 @@ class TokenDetail extends StatelessWidget {
           up: up,
         ),
         const SizedBox(height: 24),
-        const SectionHeader('Details'),
-        PropertyList(rows: [
-          PropertyRow('Price', Text(fmtPrice(row.price))),
-          PropertyRow('24h change', ChangeBadge(pct: row.change)),
-          PropertyRow('Holdings',
-              Text('${fmtAmount(row.amount)} ${row.symbol}')),
-          PropertyRow('Value', Text(fmtUsd(row.value))),
-          PropertyRow('Name', Flexible(child: Text(row.name, overflow: TextOverflow.ellipsis))),
-          if (!row.isNative)
-            PropertyRow(
-              'Mint',
-              Text(shortAddr(row.mint),
-                  style: const TextStyle(fontFamily: 'monospace')),
-              onTap: () => _openSolscan('token/${row.mint}'),
-            ),
-        ]),
+        PriceChartSection(tokenId: row.id),
         const SizedBox(height: 24),
-        const SectionHeader('Options'),
-        OptionRow(
-          label: 'Show in sidebar',
-          subtitle: 'Hidden tokens still count toward your total value.',
-          trailing: _HideButton(
-            onPressed: () {
-              model.select(WalletModel.portfolioId);
-              model.toggleHidden(row.id, true);
-            },
+        CollapsibleSection(
+          title: 'Details',
+          child: PropertyList(rows: [
+            PropertyRow('Price', Text(fmtPrice(row.price))),
+            PropertyRow('24h change', ChangeBadge(pct: row.change)),
+            PropertyRow('Holdings',
+                Text('${fmtAmount(row.amount)} ${row.symbol}')),
+            PropertyRow('Value', Text(fmtUsd(row.value))),
+            PropertyRow('Name',
+                Flexible(child: Text(row.name, overflow: TextOverflow.ellipsis))),
+            if (!row.isNative)
+              PropertyRow(
+                'Mint',
+                Text(shortAddr(row.mint),
+                    style: const TextStyle(fontFamily: 'monospace')),
+                onTap: () => _openSolscan('token/${row.mint}'),
+              ),
+          ]),
+        ),
+        const SizedBox(height: 24),
+        CollapsibleSection(
+          title: 'Options',
+          child: OptionRow(
+            label: 'Show in sidebar',
+            subtitle: 'Hidden tokens still count toward your total value.',
+            trailing: _HideButton(
+              onPressed: () {
+                model.select(WalletModel.portfolioId);
+                model.toggleHidden(row.id, true);
+              },
+            ),
           ),
         ),
       ],
