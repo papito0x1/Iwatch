@@ -682,6 +682,16 @@ class WalletModel extends ChangeNotifier {
     }
   }
 
+  /// Move the most recent point's value to [y] in place (keeping its time), so a
+  /// live tick nudges the chart's right edge without growing the series. No-op
+  /// until the first real point has been appended.
+  void _retipPoint(List<Point>? arr, double y) {
+    if (arr == null || arr.isEmpty) return;
+    final last = arr.last;
+    if (last.y == y) return;
+    arr[arr.length - 1] = Point(last.x, y);
+  }
+
   void _applyData({required bool append}) {
     final list = _enrich();
     final total = list.fold(0.0, (s, t) => s + t.value);
@@ -709,6 +719,15 @@ class WalletModel extends ChangeNotifier {
         _pushPoint(arr, now, t.value);
       }
       _persistHistory();
+    } else {
+      // Live tick (no new point): pull the latest point up/down to the current
+      // value so the portfolio area chart and the sidebar sparklines track the
+      // market between polls, mirroring how the candle's forming bar refines.
+      // No append → history stays bounded and the persisted series is unchanged.
+      _retipPoint(_historyTotal, total);
+      for (final t in list) {
+        _retipPoint(_historyById[t.id], t.value);
+      }
     }
 
     _lastUpdatedMs = DateTime.now().millisecondsSinceEpoch;
