@@ -221,7 +221,12 @@ class _Sidebar extends StatelessWidget {
               child: const Icon(Icons.donut_small,
                   size: 18, color: AppColors.orange),
             ),
-            title: 'Portfolio',
+            title: 'PORTFOLIO',
+            titleStyle: const TextStyle(
+              fontWeight: FontWeight.w700,
+              fontSize: 17,
+              letterSpacing: 0.5,
+            ),
             value: fmtUsd(model.totalValue),
             points: model.totalHistory,
             up: (model.totalChangePct ?? 0) >= 0,
