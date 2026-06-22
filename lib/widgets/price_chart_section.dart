@@ -55,6 +55,10 @@ class _PriceChartSectionState extends State<PriceChartSection> {
     final error = m.chartErrorFor(id);
     final row = m.rowById(id);
 
+    // Show the chart's current (last) candle close so the header price stays in
+    // sync with the candle; fall back to the live quote before candles load.
+    final headerPrice = candles.isNotEmpty ? candles.last.close : row?.price;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -72,7 +76,7 @@ class _PriceChartSectionState extends State<PriceChartSection> {
             children: [
               _Header(
                 symbol: row?.symbol ?? '',
-                price: row?.price,
+                price: headerPrice,
                 change: row?.change,
               ),
               const SizedBox(height: 10),
