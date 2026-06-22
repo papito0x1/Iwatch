@@ -53,4 +53,66 @@ enum ChartRange {
   final int aggregate;
 
   const ChartRange(this.label, this.timeframe, this.aggregate);
+
+  /// Duration of one candle bucket in seconds — i.e. how long a single candle
+  /// covers before the next one opens (e.g. 5m → 300, 1H → 3600, 1D → 86400).
+  int get bucketSeconds => switch (timeframe) {
+        'minute' => aggregate * 60,
+        'hour' => aggregate * 3600,
+        'day' => aggregate * 86400,
+        _ => aggregate * 60,
+      };
+}
+
+/// Advance a candle [series] for a live [price] at wall-clock [nowSec], given a
+/// [bucketSeconds]-wide timeframe. Returns the updated series, or `null` when
+/// nothing changes (so callers can skip a repaint).
+///
+/// This is what makes the chart roll forward on its own: once the clock crosses
+/// into a new bucket, a fresh candle is appended (opening at the prior close) —
+/// e.g. on the 5m range a new candle prints every 5 minutes. Within the same
+/// bucket the forming (last) candle's close/high/low are refined instead.
+///
+/// A `null` [price] means "no live trade yet" (timer-driven sweep): a rolled-over
+/// candle tracks the last close flat, and the forming candle is left untouched.
+/// Buckets align to the Unix epoch, matching GeckoTerminal's candle timestamps,
+/// so when the real candle arrives it merges over the synthetic one by time.
+///
+/// Pure (no widget/model state) so the rollover can be unit-tested.
+List<Candle>? advanceCandles(
+  List<Candle> series,
+  int nowSec,
+  int bucketSeconds,
+  double? price,
+) {
+  if (series.isEmpty || bucketSeconds <= 0) return null;
+  final last = series.last;
+  final curBucketStart = (nowSec ~/ bucketSeconds) * bucketSeconds;
+
+  if (curBucketStart > last.time) {
+    final p = price ?? last.close;
+    final fresh = Candle(
+      time: curBucketStart,
+      open: last.close,
+      high: p > last.close ? p : last.close,
+      low: p < last.close ? p : last.close,
+      close: p,
+      volume: 0,
+    );
+    return List<Candle>.of(series)..add(fresh);
+  }
+
+  if (price == null) return null; // nothing to seed without a trade
+  if (last.close == price && price <= last.high && price >= last.low) {
+    return null; // already reflects this price
+  }
+  final refined = Candle(
+    time: last.time,
+    open: last.open,
+    high: price > last.high ? price : last.high,
+    low: price < last.low ? price : last.low,
+    close: price,
+    volume: last.volume,
+  );
+  return List<Candle>.of(series)..[series.length - 1] = refined;
 }
