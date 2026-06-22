@@ -49,7 +49,7 @@ class WalletModel extends ChangeNotifier {
   // ---- persisted settings ---------------------------------------------------
   String address = '';
   String rpcUrl = '';
-  int priceInterval = 12;
+  int priceInterval = 6;
   int balanceInterval = 90;
   SortMode sort = SortMode.value;
 
@@ -320,7 +320,7 @@ class WalletModel extends ChangeNotifier {
   void loadSettings() {
     address = _prefs.getString(_kAddress) ?? '';
     rpcUrl = _prefs.getString(_kRpc) ?? '';
-    priceInterval = _clampInt(_prefs.getString(_kPriceInt), 5, 600, 12);
+    priceInterval = _clampInt(_prefs.getString(_kPriceInt), 5, 600, 6);
     balanceInterval = _clampInt(_prefs.getString(_kBalInt), 30, 3600, 90);
     sort = _sortFromString(_prefs.getString(_kSort));
   }

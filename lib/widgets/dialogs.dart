@@ -276,7 +276,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
                           onPressed: () {
                             model.saveSettings(
                               rpc: _rpc.text,
-                              priceInt: int.tryParse(_price.text) ?? 12,
+                              priceInt: int.tryParse(_price.text) ?? 6,
                               balInt: int.tryParse(_balance.text) ?? 90,
                             );
                             Navigator.of(context).pop();
