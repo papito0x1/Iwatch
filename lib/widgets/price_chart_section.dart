@@ -2,11 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/candle.dart';
+import '../services/solana_service.dart';
 import '../state/wallet_model.dart';
 import '../theme.dart';
 import '../utils/format.dart';
 import 'candle_chart.dart';
-import 'sections.dart';
 
 /// "Price chart" section for a single token — a TradingView-style candle chart
 /// with a live price header and a jup.ag-style range selector. Placed above the
@@ -62,7 +62,6 @@ class _PriceChartSectionState extends State<PriceChartSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const SectionHeader('Price chart'),
         Container(
           decoration: BoxDecoration(
             color: AppColors.card,
@@ -287,5 +286,89 @@ class _ChartBody extends StatelessWidget {
     }
     return CandleChart(
         candles: candles, symbol: symbol, rangeLabel: rangeLabel, height: 300);
+  }
+}
+
+/// "BTC" reference chart — a candle chart for Bitcoin (via a wBTC pool) shown
+/// beside a token's price chart. Reuses the same candle pipeline and helpers as
+/// [PriceChartSection]; the only difference is the id is fixed to the wBTC mint,
+/// so BTC resolves even for wallets that hold no BTC.
+class BtcChartSection extends StatefulWidget {
+  const BtcChartSection({super.key});
+
+  @override
+  State<BtcChartSection> createState() => _BtcChartSectionState();
+}
+
+class _BtcChartSectionState extends State<BtcChartSection> {
+  static const _id = SolanaService.btcMint;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  void _load() {
+    if (!mounted) return;
+    final m = context.read<WalletModel>();
+    m.loadChart(_id, m.chartRangeFor(_id));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final m = context.watch<WalletModel>();
+    final candles = m.chartFor(_id);
+    final range = m.chartRangeFor(_id);
+    final loading = m.chartLoadingFor(_id);
+    final error = m.chartErrorFor(_id);
+
+    // Header price tracks the latest candle close (the wallet holds no BTC, so
+    // there's no live quote to fall back on). Change is omitted — the OHLC
+    // legend already shows the range move.
+    final headerPrice = candles.isNotEmpty ? candles.last.close : null;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          decoration: BoxDecoration(
+            color: AppColors.card,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppColors.border),
+          ),
+          clipBehavior: Clip.antiAlias,
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _Header(
+                symbol: 'BTC',
+                price: headerPrice,
+                change: null,
+              ),
+              const SizedBox(height: 10),
+              _RangeSelector(
+                range: range,
+                loading: loading,
+                onSelect: (r) => m.setChartRange(_id, r),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 300,
+                child: _ChartBody(
+                  candles: candles,
+                  loading: loading,
+                  error: error,
+                  symbol: 'BTC',
+                  rangeLabel: range.label,
+                  onRetry: () => m.refreshChart(_id),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
   }
 }
