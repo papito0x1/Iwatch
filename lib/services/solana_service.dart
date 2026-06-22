@@ -411,6 +411,30 @@ class SolanaService {
     return deduped;
   }
 
+  /// Fetch just the most recent [count] candles for a token (single small
+  /// request) — used for live chart updates. Returns them oldest-first.
+  Future<List<Candle>> getRecentCandles(
+      {required String mint,
+      required ChartRange range,
+      int count = 4}) async {
+    final pool = await _resolvePool(mint);
+    final url =
+        '$_geckoBase/networks/solana/pools/$pool/ohlcv/${range.timeframe}'
+        '?aggregate=${range.aggregate}&limit=$count';
+    final data =
+        await _withRetry(() => _fetchJson(url, timeout: const Duration(seconds: 12)));
+    final list = data is Map
+        ? (data['data']?['attributes']?['ohlcv_list'] as List?)
+        : null;
+    if (list == null || list.isEmpty) return const [];
+    final candles = list
+        .whereType<List>()
+        .map((r) => Candle.fromGeckoRow(r))
+        .toList()
+      ..sort((a, b) => a.time.compareTo(b.time));
+    return candles;
+  }
+
   /// Duration of one candle bucket in seconds.
   static int _bucketSeconds(ChartRange r) => switch (r) {
         ChartRange.m5 => 5 * 60,

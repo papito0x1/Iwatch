@@ -78,6 +78,12 @@ class WalletModel extends ChangeNotifier {
   Timer? _balanceTimer;
   Timer? _countdownTimer;
   Timer? _histTimer;
+  Timer? _chartTimer;
+
+  /// How often the selected token's chart polls for fresh candles. Kept short
+  /// for a near-live last candle; each poll is one tiny request (last few
+  /// candles only) so it stays well under GeckoTerminal's keyless rate limit.
+  static const _chartLiveInterval = Duration(seconds: 15);
 
   // ---- prefs keys (mirror the LS map) ---------------------------------------
   static const _kAddress = 'swt.address';
@@ -169,6 +175,53 @@ class WalletModel extends ChangeNotifier {
     _chartById.remove(id);
     _rangeById.remove(id); // force a full reload (picks up pool fix too)
     await loadChart(id, ChartRange.h1);
+  }
+
+  /// Live tick: silently top up the *selected* token's chart with the latest
+  /// few candles so the last bar tracks the market in near real time. Updates
+  /// in place (no spinner, no error clobber) and preserves the user's zoom/pan.
+  Future<void> _tickChart() async {
+    final id = selectedId;
+    if (id == portfolioId) return;
+    final existing = _chartById[id];
+    if (existing == null || existing.isEmpty) return; // initial load handles it
+    if (_chartLoading.contains(id)) return; // a full load is already running
+    final range = _rangeById[id];
+    if (range == null) return;
+    final mint = rowById(id)?.mint ?? (id == 'SOL' ? SolanaService.wsolMint : id);
+    if (mint.isEmpty) return;
+
+    try {
+      final recent =
+          await _svc.getRecentCandles(mint: mint, range: range, count: 4);
+      if (recent.isEmpty) return;
+      // Bail if the user moved on (different token/range) while we fetched.
+      if (selectedId != id || _rangeById[id] != range) return;
+      final cur = _chartById[id];
+      if (cur == null || cur.isEmpty) return;
+
+      // Merge by timestamp: replaces the in-progress last bar, appends new ones.
+      final byTime = {for (final c in cur) c.time: c};
+      var changed = false;
+      for (final c in recent) {
+        final prev = byTime[c.time];
+        if (prev == null ||
+            prev.close != c.close ||
+            prev.high != c.high ||
+            prev.low != c.low ||
+            prev.volume != c.volume) {
+          byTime[c.time] = c;
+          changed = true;
+        }
+      }
+      if (!changed) return;
+      final merged = byTime.values.toList()
+        ..sort((a, b) => a.time.compareTo(b.time));
+      _chartById[id] = merged;
+      notifyListeners();
+    } catch (_) {
+      // Silent: keep the existing candles on a transient failure.
+    }
   }
 
   void setChartRange(String id, ChartRange range) {
@@ -324,9 +377,11 @@ class WalletModel extends ChangeNotifier {
     _priceTimer?.cancel();
     _balanceTimer?.cancel();
     _countdownTimer?.cancel();
+    _chartTimer?.cancel();
     _priceTimer = null;
     _balanceTimer = null;
     _countdownTimer = null;
+    _chartTimer = null;
   }
 
   void _startTimers() {
@@ -337,6 +392,8 @@ class WalletModel extends ChangeNotifier {
         Duration(seconds: balanceInterval), (_) => refreshBalances());
     _countdownTimer =
         Timer.periodic(const Duration(seconds: 1), (_) => notifyListeners());
+    _chartTimer =
+        Timer.periodic(_chartLiveInterval, (_) => _tickChart());
     _nextTickAt =
         DateTime.now().millisecondsSinceEpoch + priceInterval * 1000;
   }

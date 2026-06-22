@@ -50,8 +50,14 @@ class _CandleChartState extends State<CandleChart> {
   @override
   void didUpdateWidget(CandleChart old) {
     super.didUpdateWidget(old);
-    // A new candle set (range change / refresh) invalidates the viewport.
-    if (old.candles != widget.candles) {
+    // Reset the viewport only when the *series* changes (token/range switch),
+    // not on live ticks that update or append candles to the same series — those
+    // keep the same first timestamp, so the user's zoom/pan is preserved.
+    final oldCs = old.candles, newCs = widget.candles;
+    final seriesChanged = oldCs.isEmpty ||
+        newCs.isEmpty ||
+        oldCs.first.time != newCs.first.time; // token/range switch
+    if (seriesChanged) {
       _viewStart = null;
       _viewEnd = null;
       _hoverIndex = null;
