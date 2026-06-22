@@ -7,6 +7,42 @@ import '../models/candle.dart';
 import '../theme.dart';
 import '../utils/format.dart';
 
+/// Computes the chart viewport (start, end as fractional candle indices) after
+/// the candle list changes. `(null, null)` means the default fit-all view.
+///
+/// Rules:
+/// - Series change (token/range switch — different first timestamp, or either
+///   list empty): reset to the default view.
+/// - Same series with new bars appended while zoomed: if the view was parked at
+///   the live edge, follow the newest bar keeping the same zoom span; otherwise
+///   (panned back into history) leave it on the same bars.
+/// - Otherwise: unchanged.
+///
+/// Pure (no widget state) so the live-follow behaviour can be unit-tested.
+@visibleForTesting
+(double?, double?) nextViewport({
+  required double? start,
+  required double? end,
+  required List<Candle> oldCandles,
+  required List<Candle> newCandles,
+}) {
+  final seriesChanged = oldCandles.isEmpty ||
+      newCandles.isEmpty ||
+      oldCandles.first.time != newCandles.first.time;
+  if (seriesChanged) return (null, null);
+
+  if (end != null && newCandles.length != oldCandles.length) {
+    final oldN = oldCandles.length.toDouble();
+    if (end >= oldN - 0.5) {
+      // Was at the live edge — follow it, preserving the visible span.
+      final span = end - (start ?? 0);
+      final newN = newCandles.length.toDouble();
+      return (math.max(0, newN - span), newN);
+    }
+  }
+  return (start, end);
+}
+
 /// A TradingView / jup.ag-style candlestick chart: OHLC candles with wicks in
 /// the upper band, a volume histogram in a separate lower band, a right-hand
 /// price axis with a live last-price tag, time labels along the bottom, an
@@ -50,16 +86,17 @@ class _CandleChartState extends State<CandleChart> {
   @override
   void didUpdateWidget(CandleChart old) {
     super.didUpdateWidget(old);
-    // Reset the viewport only when the *series* changes (token/range switch),
-    // not on live ticks that update or append candles to the same series — those
-    // keep the same first timestamp, so the user's zoom/pan is preserved.
-    final oldCs = old.candles, newCs = widget.candles;
-    final seriesChanged = oldCs.isEmpty ||
-        newCs.isEmpty ||
-        oldCs.first.time != newCs.first.time; // token/range switch
-    if (seriesChanged) {
-      _viewStart = null;
-      _viewEnd = null;
+    final next = nextViewport(
+        start: _viewStart,
+        end: _viewEnd,
+        oldCandles: old.candles,
+        newCandles: widget.candles);
+    _viewStart = next.$1;
+    _viewEnd = next.$2;
+    // Drop the crosshair when the series itself changed (token/range switch).
+    if (old.candles.isEmpty ||
+        widget.candles.isEmpty ||
+        old.candles.first.time != widget.candles.first.time) {
       _hoverIndex = null;
     }
   }
