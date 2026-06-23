@@ -33,8 +33,11 @@ class PortfolioDetail extends StatelessWidget {
         ChartCard(
           label: 'Portfolio value',
           value: fmtUsd(model.totalValue),
-          points: model.totalHistory,
+          points: model.mainTotalSeries(),
           up: up,
+          range: model.balanceRange,
+          onSelectRange: model.setBalanceRange,
+          rangeLoading: model.balanceRangeLoading,
         ),
         const SizedBox(height: 24),
         const SectionHeader('Summary'),
@@ -76,8 +79,11 @@ class TokenDetail extends StatelessWidget {
         ChartCard(
           label: 'Holdings value',
           value: fmtUsd(row.value),
-          points: model.historyFor(row.id),
+          points: model.mainTokenSeries(row.id),
           up: up,
+          range: model.balanceRange,
+          onSelectRange: model.setBalanceRange,
+          rangeLoading: model.balanceRangeLoading,
         ),
         const SizedBox(height: 12),
         LayoutBuilder(

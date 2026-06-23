@@ -23,12 +23,17 @@ List<FlSpot> _spots(List<Point> pts) =>
 
 /// Large area chart for the portfolio total (with axes + tooltips).
 class TotalChart extends StatelessWidget {
-  const TotalChart({super.key, required this.points, this.up});
+  const TotalChart({super.key, required this.points, this.up, this.dateAxis = false});
 
   final List<Point> points;
 
   /// Force the trend colour; when null it is inferred from the series.
   final bool? up;
+
+  /// Label the x-axis (and tooltip) with calendar dates rather than the
+  /// time-of-day — used for the multi-day balance windows (1W / 1M) where a
+  /// bare clock time would wrap around and read like hours.
+  final bool dateAxis;
 
   @override
   Widget build(BuildContext context) {
@@ -81,7 +86,8 @@ class TotalChart extends StatelessWidget {
                 if (v == meta.min) return const SizedBox();
                 return Padding(
                   padding: const EdgeInsets.only(top: 6),
-                  child: Text(fmtTime(v.toInt()),
+                  child: Text(
+                      dateAxis ? fmtDate(v.toInt()) : fmtTime(v.toInt()),
                       style: const TextStyle(color: AppColors.muted2, fontSize: 11)),
                 );
               },
@@ -95,7 +101,7 @@ class TotalChart extends StatelessWidget {
             tooltipBorder: const BorderSide(color: AppColors.borderStrong),
             getTooltipItems: (spots) => spots
                 .map((s) => LineTooltipItem(
-                      '${fmtTime(s.x.toInt())}\n${fmtUsd(s.y)}',
+                      '${dateAxis ? fmtDateTime(s.x.toInt()) : fmtTime(s.x.toInt())}\n${fmtUsd(s.y)}',
                       const TextStyle(
                           color: AppColors.text,
                           fontWeight: FontWeight.w600,

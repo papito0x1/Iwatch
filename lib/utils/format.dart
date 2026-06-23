@@ -57,6 +57,17 @@ String fmtTime(int tsMs) {
   return DateFormat('hh:mm a').format(DateTime.fromMillisecondsSinceEpoch(tsMs));
 }
 
+/// Short calendar date for multi-day chart axes, e.g. "Jun 16".
+String fmtDate(int tsMs) {
+  return DateFormat('MMM d').format(DateTime.fromMillisecondsSinceEpoch(tsMs));
+}
+
+/// Date + time for tooltips on multi-day charts, e.g. "Jun 16, 01:12 PM".
+String fmtDateTime(int tsMs) {
+  return DateFormat('MMM d, hh:mm a')
+      .format(DateTime.fromMillisecondsSinceEpoch(tsMs));
+}
+
 String shortAddr(String? a) {
   if (a == null || a.isEmpty) return '—';
   return '${a.substring(0, 4)}…${a.substring(a.length - 4)}';

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../models/balance_graph.dart';
 import '../models/models.dart';
 import '../theme.dart';
 import 'charts.dart';
@@ -85,6 +86,10 @@ class _CollapsibleSectionState extends State<CollapsibleSection> {
 
 /// A boxed card holding a large area chart with a label + value beneath,
 /// mirroring the "Total Usage / 71%" card in GNOME Resources.
+///
+/// When [range]/[onSelectRange] are supplied, a 1D / 1W / 1M window selector is
+/// drawn above the chart (used by the main balance charts — the sidebar
+/// sparklines deliberately have no selector).
 class ChartCard extends StatelessWidget {
   const ChartCard({
     super.key,
@@ -93,6 +98,9 @@ class ChartCard extends StatelessWidget {
     required this.points,
     required this.up,
     this.height = 220,
+    this.range,
+    this.onSelectRange,
+    this.rangeLoading = false,
   });
 
   final String label;
@@ -100,9 +108,13 @@ class ChartCard extends StatelessWidget {
   final List<Point> points;
   final bool up;
   final double height;
+  final BalanceRange? range;
+  final ValueChanged<BalanceRange>? onSelectRange;
+  final bool rangeLoading;
 
   @override
   Widget build(BuildContext context) {
+    final showSelector = range != null && onSelectRange != null;
     return Container(
       decoration: BoxDecoration(
         color: AppColors.card,
@@ -114,7 +126,20 @@ class ChartCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(height: height, child: TotalChart(points: points, up: up)),
+          if (showSelector) ...[
+            _BalanceRangeSelector(
+              range: range!,
+              loading: rangeLoading,
+              onSelect: onSelectRange!,
+            ),
+            const SizedBox(height: 12),
+          ],
+          SizedBox(
+              height: height,
+              child: TotalChart(
+                  points: points,
+                  up: up,
+                  dateAxis: range != null && range != BalanceRange.d1)),
           const SizedBox(height: 12),
           Text(label,
               style: const TextStyle(color: AppColors.muted, fontSize: 13)),
@@ -125,6 +150,84 @@ class ChartCard extends StatelessWidget {
                   fontWeight: FontWeight.w700,
                   fontFeatures: [FontFeature.tabularFigures()])),
         ],
+      ),
+    );
+  }
+}
+
+/// 1D / 1W / 1M window picker for the main balance chart. Mirrors the candle
+/// chart's range chips so the two read as the same control family.
+class _BalanceRangeSelector extends StatelessWidget {
+  const _BalanceRangeSelector({
+    required this.range,
+    required this.loading,
+    required this.onSelect,
+  });
+
+  final BalanceRange range;
+  final bool loading;
+  final ValueChanged<BalanceRange> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        for (final r in BalanceRange.values) ...[
+          _BalanceRangeChip(
+            label: r.label,
+            selected: r == range,
+            onTap: () => onSelect(r),
+          ),
+          const SizedBox(width: 6),
+        ],
+        if (loading)
+          const Padding(
+            padding: EdgeInsets.only(left: 4),
+            child: SizedBox(
+              width: 13,
+              height: 13,
+              child: CircularProgressIndicator(
+                  strokeWidth: 2, color: AppColors.muted),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _BalanceRangeChip extends StatelessWidget {
+  const _BalanceRangeChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.orange.withValues(alpha: 0.18) : null,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: selected ? AppColors.orange : AppColors.border,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: selected ? AppColors.orange : AppColors.muted,
+          ),
+        ),
       ),
     );
   }

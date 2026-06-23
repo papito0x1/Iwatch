@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/balance_graph.dart';
 import '../models/models.dart';
 import '../services/price_feed.dart';
 import '../services/solana_service.dart';
@@ -35,14 +36,13 @@ class WalletModel extends ChangeNotifier {
   static const _priceTickCap = 80;
   static const _metaCap = 80;
 
-  // Balance graphs (the portfolio area chart + sidebar sparklines) show a
-  // rolling 24h window reconstructed from candle data and bucketed at 15
-  // minutes — a real day of history instead of only what's been collected live
-  // since the wallet was added. The candlestick price charts are a separate
-  // series and are deliberately untouched by this.
-  static const _histBucketSec = 15 * 60; // 15-minute buckets
-  static const _histWindowSec = 24 * 60 * 60; // 24h window
-  static const _histBuckets = _histWindowSec ~/ _histBucketSec; // 96 buckets
+  // Balance graphs (the portfolio area chart + per-token "Holdings value" card,
+  // plus the sidebar sparklines) are reconstructed from candle data so they show
+  // a real window of history instead of only what's been collected live since
+  // the wallet was added. The sidebar sparklines always show the 24h
+  // ([BalanceRange.d1]) series; the *main* chart's window is user-selectable
+  // (1D / 1W / 1M). The candlestick price charts are a separate series and are
+  // deliberately untouched by this.
   static const manageLimit = 60;
   static const _wsol = SolanaService.wsolMint;
 
@@ -57,11 +57,20 @@ class WalletModel extends ChangeNotifier {
   List<Balance> _balances = [];
   final Map<String, TokenMeta?> _meta = {};
   final Map<String, PriceInfo> _prices = {};
+  // The 24h ([BalanceRange.d1]) series — drives the sidebar sparklines and the
+  // main chart when its range is 1D.
   final List<Point> _historyTotal = [];
   final Map<String, List<Point>> _historyById = {};
-  // Guards the candle-based reconstruction of the 24h balance graphs and lets
-  // us skip re-fetching when holdings/visibility are unchanged.
-  bool _reconstructing = false;
+  // Longer windows for the *main* balance chart only (1W / 1M), reconstructed
+  // lazily when first selected and cached until holdings change.
+  final Map<BalanceRange, List<Point>> _balTotalRange = {};
+  final Map<BalanceRange, Map<String, List<Point>>> _balIdRange = {};
+  // Which window the main balance chart is showing, and which ranges are
+  // currently being (re)built — so we can skip re-fetching and show a spinner.
+  BalanceRange balanceRange = BalanceRange.d1;
+  final Set<BalanceRange> _balLoading = {};
+  bool _rebuildingAll = false;
+  // Lets us skip reconstruction when holdings/visibility are unchanged.
   String _balancesSig = '';
   Set<String> _hidden = {};
   bool _hiddenInit = false;
@@ -156,6 +165,34 @@ class WalletModel extends ChangeNotifier {
   bool isHidden(String id) => _hidden.contains(id);
 
   List<Point> historyFor(String id) => _historyById[id] ?? const [];
+
+  /// Series for the *main* portfolio "Total value" chart at the selected
+  /// [balanceRange]. (Sidebar sparklines stay on the 24h series via
+  /// [totalHistory].)
+  List<Point> mainTotalSeries() => balanceRange == BalanceRange.d1
+      ? _historyTotal
+      : (_balTotalRange[balanceRange] ?? const []);
+
+  /// Series for a token's *main* "Holdings value" chart at the selected
+  /// [balanceRange]. (Its sidebar sparkline stays on the 24h series via
+  /// [historyFor].)
+  List<Point> mainTokenSeries(String id) => balanceRange == BalanceRange.d1
+      ? historyFor(id)
+      : (_balIdRange[balanceRange]?[id] ?? const []);
+
+  /// Whether the currently-shown main-chart window is still being reconstructed.
+  bool get balanceRangeLoading => _balLoading.contains(balanceRange);
+
+  /// Switch the main balance chart's window. Shows whatever is already built
+  /// (from a prefetch or a previous session, kept current by live ticks)
+  /// immediately, and only reconstructs a window we don't have yet — so it no
+  /// longer sits on "Collecting live history…".
+  void setBalanceRange(BalanceRange r) {
+    if (balanceRange == r) return;
+    balanceRange = r;
+    notifyListeners();
+    if (r != BalanceRange.d1 && _balTotalRange[r] == null) _reconstructRange(r);
+  }
 
   /// Chart candles for a token at its currently-selected range.
   List<Candle> chartFor(String id) => _chartById[id] ?? const [];
@@ -366,6 +403,10 @@ class WalletModel extends ChangeNotifier {
     _prices.clear();
     _historyTotal.clear();
     _historyById.clear();
+    _balTotalRange.clear();
+    _balIdRange.clear();
+    _balLoading.clear();
+    balanceRange = BalanceRange.d1;
     _balancesSig = '';
     _chartById.clear();
     _rangeById.clear();
@@ -404,12 +445,32 @@ class WalletModel extends ChangeNotifier {
     if (rawHist != null) {
       try {
         final h = jsonDecode(rawHist) as Map<String, dynamic>;
-        _historyTotal
-          ..clear()
-          ..addAll(_pointsFromJson(h['total']));
-        _historyById.clear();
-        final byId = h['byId'] as Map<String, dynamic>? ?? {};
-        byId.forEach((k, v) => _historyById[k] = _pointsFromJson(v));
+        void load(Map<String, dynamic>? m, List<Point> total,
+            Map<String, List<Point>> byId) {
+          total
+            ..clear()
+            ..addAll(_pointsFromJson(m?['total']));
+          byId.clear();
+          (m?['byId'] as Map<String, dynamic>? ?? const {})
+              .forEach((k, v) => byId[k] = _pointsFromJson(v));
+        }
+
+        if (h.containsKey('total')) {
+          // Legacy single-window (24h-only) format.
+          load(h, _historyTotal, _historyById);
+        } else {
+          load(h[BalanceRange.d1.name] as Map<String, dynamic>?, _historyTotal,
+              _historyById);
+          for (final r in [BalanceRange.w1, BalanceRange.m1]) {
+            final m = h[r.name] as Map<String, dynamic>?;
+            if (m == null) continue;
+            final total = <Point>[];
+            final byId = <String, List<Point>>{};
+            load(m, total, byId);
+            _balTotalRange[r] = total;
+            _balIdRange[r] = byId;
+          }
+        }
       } catch (_) {}
     }
 
@@ -689,123 +750,149 @@ class WalletModel extends ChangeNotifier {
     return arr;
   }
 
-  /// Advance a 24h balance-graph [arr] for the current [value] at [nowSec],
-  /// mirroring how a candle's forming bar rolls over: refine the last 15-minute
-  /// bucket, or — once the clock crosses into a new one — open a fresh bucket and
-  /// drop anything older than the 24h window. No-op on an empty series, which
-  /// _reconstructHistory() is responsible for seeding.
-  void _advancePoint(List<Point>? arr, int nowSec, double value) {
-    if (arr == null || arr.isEmpty) return;
-    final bucketMs = ((nowSec ~/ _histBucketSec) * _histBucketSec) * 1000.0;
-    if (bucketMs > arr.last.x) {
-      arr.add(Point(bucketMs, value));
-      final cutoff = (nowSec - _histWindowSec) * 1000.0;
-      while (arr.length > 2 && arr.first.x < cutoff) {
-        arr.removeAt(0);
-      }
-    } else {
-      arr[arr.length - 1] = Point(arr.last.x, value);
-    }
+  /// Roll a balance-graph [arr] forward for the current [value] at [nowSec] on
+  /// [range]'s bucket; a no-op on a null/empty series (reconstruction seeds it).
+  void _advance(List<Point>? arr, int nowSec, double value, BalanceRange range) {
+    if (arr == null) return;
+    advanceBalancePoint(arr, nowSec, value, range.bucketSec, range.windowSec);
   }
 
   /// Rebuild the balance graphs whenever the holdings or which tokens are shown
   /// actually change; a cheap no-op otherwise so routine polls don't re-fetch.
+  /// Rebuilds (and prefetches) every window so a later 1W/1M switch is instant.
   void _maybeReconstructHistory() {
     final mints = _balances.map((b) => '${b.mint}:${b.uiAmount}').toList()
       ..sort();
     final hidden = (_hidden.toList()..sort()).join('|');
     final sig = '${mints.join(',')}#$hidden';
-    if (sig == _balancesSig) return;
+    if (sig == _balancesSig) {
+      // Holdings unchanged — only retry windows that haven't built yet (e.g. one
+      // a rate limit aborted last time). Built windows are kept current by live
+      // ticks, so we don't re-fetch them.
+      _buildMissingRanges();
+      return;
+    }
     _balancesSig = sig;
-    _reconstructHistory();
+    _rebuildAllRanges();
   }
 
-  /// Reconstruct the portfolio value curve and per-token sparklines over the last
-  /// 24h from OHLCV candles: value(t) = balance × close(t), summed across the
-  /// holdings — a real day of history on load instead of only what's been
+  /// (Re)build any balance window we don't yet have data for — used to retry a
+  /// window whose candle fetch was rate-limited on an earlier sweep.
+  Future<void> _buildMissingRanges() async {
+    if (_rebuildingAll) return;
+    for (final r in BalanceRange.values) {
+      final has = r == BalanceRange.d1
+          ? _historyTotal.isNotEmpty
+          : _balTotalRange[r] != null;
+      if (!has) await _reconstructRange(r);
+    }
+  }
+
+  /// Rebuild every balance window from candles, sequentially so we don't burst
+  /// the chart provider's keyless rate limit: the 24h series first (it drives the
+  /// sidebar sparklines and the default chart), then the 1W and 1M windows so a
+  /// later switch is already cached. Previously-shown or persisted series stay on
+  /// screen until each rebuild overwrites them — no "collecting" flash.
+  Future<void> _rebuildAllRanges() async {
+    if (_rebuildingAll) return;
+    _rebuildingAll = true;
+    final reqAddr = address;
+    try {
+      for (final r in BalanceRange.values) {
+        if (address != reqAddr) return;
+        // A range that aborts (rate limit) is left missing; the next balance
+        // poll retries it via _buildMissingRanges().
+        await _reconstructRange(r);
+      }
+    } finally {
+      _rebuildingAll = false;
+    }
+  }
+
+  /// Reconstruct the portfolio value curve and per-token holdings curves over
+  /// [range] from OHLCV candles: value(t) = balance × close(t), summed across the
+  /// holdings — a real window of history on load instead of only what's been
   /// collected live since the wallet was added.
   ///
   /// Bounded to the visible widget tokens (the meaningful holdings) so we stay
   /// under the chart provider's keyless rate limit; the remaining dust holdings
-  /// are folded into the total at their current value as a flat baseline. Only
-  /// the value/sparkline series are touched here — the candlestick charts are an
-  /// independent series and left alone.
-  Future<void> _reconstructHistory() async {
-    if (_reconstructing || _lastList.isEmpty) return;
-    _reconstructing = true;
+  /// are folded into the total at their current value as a flat baseline, and a
+  /// pool-less token falls back to a flat line. Only the value series are touched
+  /// here — the candlestick charts are independent and left alone.
+  ///
+  /// Note: this prices the *current* holdings at past candle closes, so right
+  /// after a large swap the historical shape reflects today's balances, not what
+  /// was actually held then (the standard "today's holdings over the window"
+  /// view — we don't keep per-bucket balance history).
+  ///
+  /// Non-destructive: a candle fetch that throws (rate limit / network) aborts
+  /// the whole rebuild and leaves the existing cached/persisted curve in place,
+  /// rather than overwriting a good week of history with a flat guess. Only a
+  /// successful, complete rebuild is committed. Returns whether it committed.
+  Future<bool> _reconstructRange(BalanceRange range) async {
+    if (_balLoading.contains(range) || _lastList.isEmpty) return false;
+    _balLoading.add(range);
+    notifyListeners();
     final reqAddr = address;
     try {
       final nowSec = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-      final lastBucket = (nowSec ~/ _histBucketSec) * _histBucketSec;
-      final grid = [
-        for (var i = _histBuckets - 1; i >= 0; i--)
-          lastBucket - i * _histBucketSec
-      ];
+      final grid = balanceGrid(range, nowSec);
 
       final visible = _lastList.where((t) => !_hidden.contains(t.id)).toList();
       final byId = <String, List<Point>>{};
       final totals = List<double>.filled(grid.length, 0.0);
 
       for (final t in visible) {
-        if (address != reqAddr) return; // wallet switched mid-flight
+        if (address != reqAddr) return false; // wallet switched mid-flight
         final mint = t.isNative ? SolanaService.wsolMint : t.mint;
         List<Candle> candles;
         try {
           candles = await _svc.getRecentCandles(
-              mint: mint, range: ChartRange.m15, count: _histBuckets);
+              mint: mint, range: range.candle, count: range.buckets);
         } catch (_) {
-          candles = const []; // pool-less / rate-limited → flat fallback
+          // Transient failure — bail and keep the good cached data; the sweep
+          // is retried on the next balance poll. (A successful-but-empty fetch
+          // is a genuinely pool-less token and still flat-fills below.)
+          return false;
         }
-        final series = _seriesOnGrid(grid, candles, t.amount, t.value);
+        final series = balanceSeriesOnGrid(grid, candles, t.amount, t.value);
         byId[t.id] = series;
         for (var i = 0; i < grid.length; i++) {
           totals[i] += series[i].y;
         }
-        await Future.delayed(const Duration(milliseconds: 150)); // be polite
+        await Future.delayed(const Duration(milliseconds: 350)); // ease the limit
       }
-      if (address != reqAddr) return;
+      if (address != reqAddr) return false;
 
       // Fold the non-visible (dust) holdings in at their current value so the
       // total's magnitude stays right without a request per token.
       final baseline = _lastList
           .where((t) => _hidden.contains(t.id))
           .fold(0.0, (s, t) => s + t.value);
+      final total = [
+        for (var i = 0; i < grid.length; i++)
+          Point(grid[i] * 1000.0, totals[i] + baseline)
+      ];
 
-      _historyById
-        ..clear()
-        ..addAll(byId);
-      _historyTotal
-        ..clear()
-        ..addAll([
-          for (var i = 0; i < grid.length; i++)
-            Point(grid[i] * 1000.0, totals[i] + baseline)
-        ]);
-      _persistHistory();
-      notifyListeners();
-    } finally {
-      _reconstructing = false;
-    }
-  }
-
-  /// Map a token's candle closes onto the 24h [grid] (carry-forward, with the
-  /// earliest close back-filled across the head) scaled by [amount]; a flat line
-  /// at [fallbackValue] when the token has no candles (illiquid / pool-less).
-  List<Point> _seriesOnGrid(List<int> grid, List<Candle> candles, double amount,
-      double fallbackValue) {
-    if (candles.isEmpty) {
-      return [for (final b in grid) Point(b * 1000.0, fallbackValue)];
-    }
-    final out = <Point>[];
-    var idx = 0;
-    var lastClose = candles.first.close;
-    for (final bucket in grid) {
-      while (idx < candles.length && candles[idx].time <= bucket) {
-        lastClose = candles[idx].close;
-        idx++;
+      if (range == BalanceRange.d1) {
+        // The 24h series is shared with the sidebar sparklines.
+        _historyById
+          ..clear()
+          ..addAll(byId);
+        _historyTotal
+          ..clear()
+          ..addAll(total);
+      } else {
+        _balIdRange[range] = byId;
+        _balTotalRange[range] = total;
       }
-      out.add(Point(bucket * 1000.0, lastClose * amount));
+      _persistHistory(); // persists every cached window
+      notifyListeners();
+      return true;
+    } finally {
+      _balLoading.remove(range);
+      notifyListeners();
     }
-    return out;
   }
 
   void _applyData({required bool append}) {
@@ -827,16 +914,30 @@ class WalletModel extends ChangeNotifier {
       _saveHidden();
     }
 
-    // Roll the 24h balance-graph series forward on the 15-minute bucket: a fresh
-    // value refines the forming bucket, and once the clock crosses into a new one
-    // a fresh bucket opens (trimming anything past 24h). The series is seeded by
-    // _reconstructHistory() from candle data; an empty series is left untouched
-    // until that lands. `append` only gates the (debounced) persist — the
-    // rollover is identical on a poll or a live tick.
+    // Roll the balance-graph series forward on their bucket: a fresh value
+    // refines the forming bucket, and once the clock crosses into a new one a
+    // fresh bucket opens (trimming anything past the window). The series are
+    // seeded by _reconstructRange() from candle data; an empty series is left
+    // untouched until that lands. `append` only gates the (debounced) persist —
+    // the rollover is identical on a poll or a live tick.
     final nowSec = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    _advancePoint(_historyTotal, nowSec, total);
+    _advance(_historyTotal, nowSec, total, BalanceRange.d1);
     for (final t in list) {
-      _advancePoint(_historyById[t.id], nowSec, t.value);
+      _advance(_historyById[t.id], nowSec, t.value, BalanceRange.d1);
+    }
+    // Keep every built 1W/1M window live too — not just the one on screen — so
+    // switching to it shows current data without a re-fetch. Reconstruction only
+    // seeds/refreshes on holdings change; day-to-day the windows roll forward
+    // entirely on live ticks (this is the "live only moves the next bucket"
+    // behaviour — history is never rewritten).
+    for (final r in [BalanceRange.w1, BalanceRange.m1]) {
+      _advance(_balTotalRange[r], nowSec, total, r);
+      final byId = _balIdRange[r];
+      if (byId != null) {
+        for (final t in list) {
+          _advance(byId[t.id], nowSec, t.value, r);
+        }
+      }
     }
     if (append) _persistHistory();
 
@@ -902,6 +1003,10 @@ class WalletModel extends ChangeNotifier {
     _meta.clear();
     _historyTotal.clear();
     _historyById.clear();
+    _balTotalRange.clear();
+    _balIdRange.clear();
+    _balLoading.clear();
+    balanceRange = BalanceRange.d1;
     _balancesSig = '';
     _chartById.clear();
     _rangeById.clear();
@@ -928,12 +1033,22 @@ class WalletModel extends ChangeNotifier {
     if (_histTimer != null) return;
     _histTimer = Timer(const Duration(seconds: 4), () {
       _histTimer = null;
-      final slim = {
-        'total': _tail(_historyTotal).map((p) => {'x': p.x, 'y': p.y}).toList(),
-        'byId': {
-          for (final e in _historyById.entries)
-            e.key: _tail(e.value).map((p) => {'x': p.x, 'y': p.y}).toList()
-        },
+      Map<String, dynamic> enc(
+              List<Point> total, Map<String, List<Point>> byId) =>
+          {
+            'total': _tail(total).map((p) => {'x': p.x, 'y': p.y}).toList(),
+            'byId': {
+              for (final e in byId.entries)
+                e.key: _tail(e.value).map((p) => {'x': p.x, 'y': p.y}).toList()
+            },
+          };
+      // One entry per cached window, keyed by range name; restored on next load
+      // so 1W/1M show instantly instead of re-fetching from scratch.
+      final slim = <String, dynamic>{
+        BalanceRange.d1.name: enc(_historyTotal, _historyById),
+        for (final r in [BalanceRange.w1, BalanceRange.m1])
+          if (_balTotalRange[r] != null)
+            r.name: enc(_balTotalRange[r]!, _balIdRange[r] ?? const {}),
       };
       _prefs.setString(_kHistory(address), jsonEncode(slim));
     });
