@@ -22,7 +22,7 @@ the GNOME/Adwaita conventions you already know from **Settings**, **Files** and 
 Grab the latest `.deb` from [**Releases**](https://github.com/papito0x1/Iwatch/releases/latest):
 
 ```bash
-sudo apt install ./iwatch_1.3.0_amd64.deb
+sudo apt install ./iwatch_1.4.0_amd64.deb
 ```
 
 Then launch **Iwatch** from the app grid.
