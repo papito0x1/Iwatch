@@ -22,7 +22,7 @@ the GNOME/Adwaita conventions you already know from **Settings**, **Files** and 
 Grab the latest `.deb` from [**Releases**](https://github.com/papito0x1/Iwatch/releases/latest):
 
 ```bash
-sudo apt install ./iwatch_1.0.0_amd64.deb
+sudo apt install ./iwatch_1.3.0_amd64.deb
 ```
 
 Then launch **Iwatch** from the app grid.
@@ -35,8 +35,10 @@ Iwatch is built around the same **master–detail** layout as the Ubuntu *Resour
   app (the GTK header bar is hidden) and split across the sidebar and detail panes.
 - A **sidebar** where the portfolio and each token is a tile with an icon, value and a
   **live sparkline** — just like CPU/Memory/GPU in Resources.
-- A **detail pane** with section headers, a large area-chart card ("Value"), and a grouped
-  **boxed list** of properties (price, 24h change, holdings, mint…).
+- A **detail pane** with section headers, a large area-chart card ("Value") with a
+  **1D / 1W / 1M** window selector, a pair of **TradingView-style candlestick charts** (the
+  token vs. BTC) that roll forward live, and a grouped **boxed list** of properties (price,
+  24h change, holdings, mint…).
 - Ubuntu colours throughout: **Ubuntu Orange** accent, aubergine brand tone, Yaru-dark
   neutral surfaces, `YaruSwitch` / `YaruIconButton` / `YaruDialogTitleBar`.
 
@@ -45,10 +47,14 @@ Iwatch is built around the same **master–detail** layout as the Ubuntu *Resour
 - **Watch any wallet** — paste a Solana address; it's persisted and auto-loads on launch.
 - **Live portfolio + per-token graphs** — value, price, 24h change and a sparkline that
   updates as prices move.
+- **Real history, not since-launch** — the value charts are reconstructed from candle data,
+  so they show a full window the moment a wallet loads. The main chart's window is selectable
+  (**1D / 1W / 1M**); the sidebar sparklines stay on 24h.
 - **Manage the sidebar** — choose which tokens appear (hidden tokens still count toward the
   total); sort by value / 24h change / name.
 - **Real on-chain data** — balances from Solana RPC; prices/metadata from Jupiter.
-- **Smart polling** — prices refresh often (light), balances slowly (heavier RPC).
+- **Smart polling** — prices refresh every ~6s (light) plus a live WebSocket overlay for
+  majors; balances refresh slowly (heavier, rate-limited RPC).
 - **Custom RPC** — paste a Helius / QuickNode / Triton endpoint in Settings.
 
 ## Run it
@@ -77,8 +83,15 @@ squircle with a live rising-chart mark.
 | Concern | Source |
 | --- | --- |
 | SOL + SPL/Token-2022 balances | Solana JSON-RPC (`getBalance`, `getTokenAccountsByOwner`) |
-| Live USD prices + 24h change | Jupiter `price/v3` |
+| USD prices + 24h change (long tail) | Jupiter `price/v3`, polled every ~6s |
+| Live tick prices (majors) | Coinbase WebSocket overlay |
+| OHLCV candles + value-history reconstruction | GeckoTerminal (keyless) |
 | Token symbol / name / icon | Jupiter `tokens/v2/search` |
+
+The value charts and sparklines are **reconstructed from candles** — `value(t) = balance ×
+close(t)`, summed across holdings — so they show a real window of history on load instead of
+only what's collected since launch; live ticks then advance just the forming bucket, never
+rewriting past history.
 
 All network requests run directly from the Dart isolate — no CORS, no IPC bridge, no keys.
 
@@ -87,6 +100,8 @@ lib/
   main.dart               app entry, Yaru theme, window setup
   theme.dart              Ubuntu/Yaru palette
   models/models.dart      balance / price / meta / token-row models
+  models/candle.dart      OHLCV candle + live rollover (pure, unit-tested)
+  models/balance_graph.dart  balance-window math: grid, candle→value, rollover (pure)
   services/
     solana_service.dart   Solana RPC + Jupiter (port of the old Electron main.js)
   state/
@@ -107,7 +122,7 @@ legacy-electron/          the original Electron app, kept for reference
 ## Settings
 
 - **Custom RPC endpoint** — the public RPC is rate-limited; a dedicated endpoint is recommended.
-- **Price / balance refresh (s)** — polling cadence (defaults 12s / 90s).
+- **Price / balance refresh (s)** — polling cadence (defaults 6s / 90s).
 - **Clear saved data** — wipes the saved wallet, sidebar layout, and chart history.
 
 ## Migrated from Electron
