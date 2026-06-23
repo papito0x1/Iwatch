@@ -22,6 +22,17 @@ static void first_frame_cb(MyApplication* self, FlView* view) {
 // Implements GApplication::activate.
 static void my_application_activate(GApplication* application) {
   MyApplication* self = MY_APPLICATION(application);
+
+  // Single-instance: a second launch is routed here (over D-Bus, via the unique
+  // application-id) rather than opening another window. If a window already
+  // exists, just present (raise + focus) it and bail — one Iwatch at a time, so
+  // two instances can't fight over the saved wallet / prefs file.
+  GList* windows = gtk_application_get_windows(GTK_APPLICATION(application));
+  if (windows != nullptr) {
+    gtk_window_present(GTK_WINDOW(windows->data));
+    return;
+  }
+
   GtkWindow* window =
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
 
@@ -147,7 +158,10 @@ MyApplication* my_application_new() {
   // the application to be recognized beyond its binary name.
   g_set_prgname(APPLICATION_ID);
 
+  // Use the default flags (not G_APPLICATION_NON_UNIQUE) so GTK registers the
+  // unique application-id on D-Bus and enforces a single instance — a second
+  // launch hands off to the running one (see my_application_activate).
   return MY_APPLICATION(g_object_new(my_application_get_type(),
                                      "application-id", APPLICATION_ID, "flags",
-                                     G_APPLICATION_NON_UNIQUE, nullptr));
+                                     G_APPLICATION_FLAGS_NONE, nullptr));
 }
