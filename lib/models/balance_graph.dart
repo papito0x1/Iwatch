@@ -38,16 +38,25 @@ List<int> balanceGrid(BalanceRange range, int nowSec) {
 }
 
 /// Map a token's candle closes onto the [grid] (carry-forward, with the earliest
-/// close back-filled across the head) scaled by [amount] to give the holding's
-/// value at each bucket. A flat line at [fallbackValue] when the token has no
-/// candles (illiquid / pool-less). [candles] must be oldest-first; [grid] is in
-/// seconds and the returned points' x are in milliseconds.
+/// close back-filled across the head) and scale to the holding's value, anchored
+/// so the most recent bucket equals [currentValue].
+///
+/// We use the *ratio* of each close to the latest close — `currentValue ×
+/// close(t) / close(now)` — rather than `close × amount`. This is scale-
+/// invariant: the magnitude stays correct (and small) even when the candle pool
+/// prices in odd units or a scam token resolves to a misleading pool, because
+/// the authoritative current value comes from the price feed. Algebraically it
+/// equals `balance × close(t)` whenever the candle is a true USD price.
+///
+/// A flat line at [currentValue] when the token has no candles (illiquid /
+/// pool-less) or the latest close is non-positive. [candles] must be oldest-
+/// first; [grid] is in seconds and the returned points' x are in milliseconds.
 List<Point> balanceSeriesOnGrid(
-    List<int> grid, List<Candle> candles, double amount, double fallbackValue) {
+    List<int> grid, List<Candle> candles, double currentValue) {
   if (candles.isEmpty) {
-    return [for (final b in grid) Point(b * 1000.0, fallbackValue)];
+    return [for (final b in grid) Point(b * 1000.0, currentValue)];
   }
-  final out = <Point>[];
+  final closes = <double>[];
   var idx = 0;
   var lastClose = candles.first.close;
   for (final bucket in grid) {
@@ -55,9 +64,49 @@ List<Point> balanceSeriesOnGrid(
       lastClose = candles[idx].close;
       idx++;
     }
-    out.add(Point(bucket * 1000.0, lastClose * amount));
+    closes.add(lastClose);
   }
-  return out;
+  final anchor = closes.last;
+  if (anchor <= 0) {
+    return [for (final b in grid) Point(b * 1000.0, currentValue)];
+  }
+  return [
+    for (var i = 0; i < grid.length; i++)
+      Point(grid[i] * 1000.0, currentValue * closes[i] / anchor)
+  ];
+}
+
+/// Re-align an existing value series [prev] (Points with x in milliseconds) onto
+/// [grid] (seconds) by carry-forward, re-anchored so the latest bucket equals
+/// [currentValue] — used to keep a token's *shape* when its candle re-fetch is
+/// rate-limited, instead of dropping it to a flat line. Re-anchoring keeps the
+/// magnitude correct even if [prev] was persisted with a stale or mis-scaled
+/// value. Buckets past the end of [prev] carry its last value; a flat
+/// [currentValue] line when [prev] is empty or its latest value is non-positive.
+List<Point> reuseSeriesOnGrid(
+    List<int> grid, List<Point> prev, double currentValue) {
+  if (prev.isEmpty) {
+    return [for (final b in grid) Point(b * 1000.0, currentValue)];
+  }
+  final carried = <double>[];
+  var idx = 0;
+  var last = prev.first.y;
+  for (final b in grid) {
+    final bMs = b * 1000.0;
+    while (idx < prev.length && prev[idx].x <= bMs) {
+      last = prev[idx].y;
+      idx++;
+    }
+    carried.add(last);
+  }
+  final anchor = carried.last;
+  if (anchor <= 0) {
+    return [for (final b in grid) Point(b * 1000.0, currentValue)];
+  }
+  return [
+    for (var i = 0; i < grid.length; i++)
+      Point(grid[i] * 1000.0, currentValue * carried[i] / anchor)
+  ];
 }
 
 /// Roll a balance series [arr] forward for the current [value] at [nowSec],

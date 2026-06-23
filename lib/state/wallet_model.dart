@@ -69,6 +69,9 @@ class WalletModel extends ChangeNotifier {
   // currently being (re)built — so we can skip re-fetching and show a spinner.
   BalanceRange balanceRange = BalanceRange.d1;
   final Set<BalanceRange> _balLoading = {};
+  // Which tokens have real candle data per window — so a rate-limited retry only
+  // re-fetches the ones that fell back, and a complete window stops fetching.
+  final Map<BalanceRange, Set<String>> _balReal = {};
   bool _rebuildingAll = false;
   // Lets us skip reconstruction when holdings/visibility are unchanged.
   String _balancesSig = '';
@@ -191,7 +194,7 @@ class WalletModel extends ChangeNotifier {
     if (balanceRange == r) return;
     balanceRange = r;
     notifyListeners();
-    if (r != BalanceRange.d1 && _balTotalRange[r] == null) _reconstructRange(r);
+    if (r != BalanceRange.d1 && !_rangeComplete(r)) _reconstructRange(r);
   }
 
   /// Chart candles for a token at its currently-selected range.
@@ -406,6 +409,7 @@ class WalletModel extends ChangeNotifier {
     _balTotalRange.clear();
     _balIdRange.clear();
     _balLoading.clear();
+    _balReal.clear();
     balanceRange = BalanceRange.d1;
     _balancesSig = '';
     _chartById.clear();
@@ -766,25 +770,39 @@ class WalletModel extends ChangeNotifier {
     final hidden = (_hidden.toList()..sort()).join('|');
     final sig = '${mints.join(',')}#$hidden';
     if (sig == _balancesSig) {
-      // Holdings unchanged — only retry windows that haven't built yet (e.g. one
-      // a rate limit aborted last time). Built windows are kept current by live
-      // ticks, so we don't re-fetch them.
-      _buildMissingRanges();
+      // Holdings unchanged — top up any window that still has tokens on a
+      // fallback curve (rate-limited last time). Complete windows are kept
+      // current by live ticks, so they don't re-fetch.
+      _refreshIncompleteRanges();
       return;
     }
     _balancesSig = sig;
+    _balReal.clear(); // holdings changed — every token must be re-fetched
     _rebuildAllRanges();
   }
 
-  /// (Re)build any balance window we don't yet have data for — used to retry a
-  /// window whose candle fetch was rate-limited on an earlier sweep.
-  Future<void> _buildMissingRanges() async {
+  /// Whether [range] has real candle data for every visible token.
+  bool _rangeComplete(BalanceRange range) {
+    final real = _balReal[range];
+    if (real == null) return false;
+    return _lastList
+        .where((t) => !_hidden.contains(t.id))
+        .every((t) => real.contains(t.id));
+  }
+
+  /// Retry any window still missing real data for some token — re-fetches only
+  /// the tokens that fell back, until every visible holding is real.
+  Future<void> _refreshIncompleteRanges() async {
     if (_rebuildingAll) return;
-    for (final r in BalanceRange.values) {
-      final has = r == BalanceRange.d1
-          ? _historyTotal.isNotEmpty
-          : _balTotalRange[r] != null;
-      if (!has) await _reconstructRange(r);
+    _rebuildingAll = true;
+    final reqAddr = address;
+    try {
+      for (final r in BalanceRange.values) {
+        if (address != reqAddr) return;
+        if (!_rangeComplete(r)) await _reconstructRange(r);
+      }
+    } finally {
+      _rebuildingAll = false;
     }
   }
 
@@ -825,10 +843,14 @@ class WalletModel extends ChangeNotifier {
   /// was actually held then (the standard "today's holdings over the window"
   /// view — we don't keep per-bucket balance history).
   ///
-  /// Non-destructive: a candle fetch that throws (rate limit / network) aborts
-  /// the whole rebuild and leaves the existing cached/persisted curve in place,
-  /// rather than overwriting a good week of history with a flat guess. Only a
-  /// successful, complete rebuild is committed. Returns whether it committed.
+  /// Per-token and incremental: each token that fetches commits its real curve;
+  /// a token whose fetch throws (rate limit / network) keeps its *previous* curve
+  /// (re-aligned to the new grid), or a flat placeholder only if we've never had
+  /// data for it — never a flat line over a good one. A token already known-real
+  /// is re-aligned without re-fetching. The window always commits what it has, so
+  /// a many-token wallet under a rate limit no longer sits forever on "Collecting
+  /// live history…"; tokens that fell back are retried on the next balance poll
+  /// until every visible holding is real. Returns whether the window is complete.
   Future<bool> _reconstructRange(BalanceRange range) async {
     if (_balLoading.contains(range) || _lastList.isEmpty) return false;
     _balLoading.add(range);
@@ -838,57 +860,78 @@ class WalletModel extends ChangeNotifier {
       final nowSec = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final grid = balanceGrid(range, nowSec);
 
-      final visible = _lastList.where((t) => !_hidden.contains(t.id)).toList();
+      // Biggest holdings first so the chart's magnitude is right after the very
+      // first fetch even on a huge wallet.
+      final visible = _lastList.where((t) => !_hidden.contains(t.id)).toList()
+        ..sort((a, b) => b.value.compareTo(a.value));
+      final existing =
+          range == BalanceRange.d1 ? _historyById : (_balIdRange[range] ?? {});
+      final real = _balReal.putIfAbsent(range, () => <String>{});
       final byId = <String, List<Point>>{};
-      final totals = List<double>.filled(grid.length, 0.0);
-
-      for (final t in visible) {
-        if (address != reqAddr) return false; // wallet switched mid-flight
-        final mint = t.isNative ? SolanaService.wsolMint : t.mint;
-        List<Candle> candles;
-        try {
-          candles = await _svc.getRecentCandles(
-              mint: mint, range: range.candle, count: range.buckets);
-        } catch (_) {
-          // Transient failure — bail and keep the good cached data; the sweep
-          // is retried on the next balance poll. (A successful-but-empty fetch
-          // is a genuinely pool-less token and still flat-fills below.)
-          return false;
-        }
-        final series = balanceSeriesOnGrid(grid, candles, t.amount, t.value);
-        byId[t.id] = series;
-        for (var i = 0; i < grid.length; i++) {
-          totals[i] += series[i].y;
-        }
-        await Future.delayed(const Duration(milliseconds: 350)); // ease the limit
-      }
-      if (address != reqAddr) return false;
+      var complete = true;
 
       // Fold the non-visible (dust) holdings in at their current value so the
       // total's magnitude stays right without a request per token.
       final baseline = _lastList
           .where((t) => _hidden.contains(t.id))
           .fold(0.0, (s, t) => s + t.value);
-      final total = [
-        for (var i = 0; i < grid.length; i++)
-          Point(grid[i] * 1000.0, totals[i] + baseline)
-      ];
 
-      if (range == BalanceRange.d1) {
-        // The 24h series is shared with the sidebar sparklines.
-        _historyById
-          ..clear()
-          ..addAll(byId);
-        _historyTotal
-          ..clear()
-          ..addAll(total);
-      } else {
-        _balIdRange[range] = byId;
-        _balTotalRange[range] = total;
+      // Commit whatever's built so far — called after each fetched token so the
+      // chart fills in progressively instead of waiting on the whole sweep.
+      void commit() {
+        final total = [
+          for (var i = 0; i < grid.length; i++)
+            Point(
+                grid[i] * 1000.0,
+                baseline +
+                    visible.fold(0.0, (s, t) => s + (byId[t.id]?[i].y ?? 0)))
+        ];
+        if (range == BalanceRange.d1) {
+          // The 24h series is shared with the sidebar sparklines.
+          _historyById
+            ..clear()
+            ..addAll(byId);
+          _historyTotal
+            ..clear()
+            ..addAll(total);
+        } else {
+          _balIdRange[range] = Map.of(byId);
+          _balTotalRange[range] = total;
+        }
+        notifyListeners();
       }
+
+      for (final t in visible) {
+        if (address != reqAddr) return false; // wallet switched mid-flight
+        // Already have real candle data for this token — just re-align it onto
+        // the new grid, no fetch (keeps us well under the rate limit).
+        if (real.contains(t.id) && existing[t.id] != null) {
+          byId[t.id] = reuseSeriesOnGrid(grid, existing[t.id]!, t.value);
+          continue;
+        }
+        final mint = t.isNative ? SolanaService.wsolMint : t.mint;
+        try {
+          final candles = await _svc.getRecentCandles(
+              mint: mint, range: range.candle, count: range.buckets);
+          byId[t.id] = balanceSeriesOnGrid(grid, candles, t.value);
+          real.add(t.id);
+          commit(); // progressive: show the chart as each holding lands
+          await Future.delayed(const Duration(milliseconds: 350)); // ease limit
+        } catch (_) {
+          // Rate-limited / network: keep this token's prior curve if we have one
+          // (re-aligned), else a flat placeholder. Retry it next poll.
+          complete = false;
+          final prev = existing[t.id];
+          byId[t.id] = (prev != null && prev.length >= 2)
+              ? reuseSeriesOnGrid(grid, prev, t.value)
+              : balanceSeriesOnGrid(grid, const [], t.value);
+        }
+      }
+      if (address != reqAddr) return false;
+      real.removeWhere((id) => !visible.any((t) => t.id == id));
+      commit(); // final commit folds in any fallbacks
       _persistHistory(); // persists every cached window
-      notifyListeners();
-      return true;
+      return complete;
     } finally {
       _balLoading.remove(range);
       notifyListeners();
@@ -1006,6 +1049,7 @@ class WalletModel extends ChangeNotifier {
     _balTotalRange.clear();
     _balIdRange.clear();
     _balLoading.clear();
+    _balReal.clear();
     balanceRange = BalanceRange.d1;
     _balancesSig = '';
     _chartById.clear();

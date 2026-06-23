@@ -29,28 +29,55 @@ void main() {
   group('balanceSeriesOnGrid', () {
     final grid = [0, 900, 1800, 2700];
 
-    test('carry-forward holds the last close until the next candle', () {
-      final candles = [c(0, 10), c(1800, 20)];
-      final s = balanceSeriesOnGrid(grid, candles, 2, 0);
-      expect(s.map((p) => p.y).toList(), [20, 20, 40, 40]);
+    test('anchors the latest bucket to the current value, scaling history by ratio', () {
+      // closes carry-forward to [10,10,20,20]; latest 20 anchors to value 80.
+      final s = balanceSeriesOnGrid(grid, [c(0, 10), c(1800, 20)], 80);
+      expect(s.map((p) => p.y).toList(), [40, 40, 80, 80]);
       // x is the bucket time in milliseconds.
       expect(s.map((p) => p.x).toList(), [0, 900000, 1800000, 2700000]);
     });
 
     test('back-fills the head with the earliest close', () {
       final candles = [c(1800, 30)]; // nothing for the first two buckets
-      final s = balanceSeriesOnGrid(grid, candles, 1, 0);
-      expect(s.map((p) => p.y).toList(), [30, 30, 30, 30]);
+      final s = balanceSeriesOnGrid(grid, candles, 99);
+      // every bucket carries the one close → flat at the current value.
+      expect(s.map((p) => p.y).toList(), [99, 99, 99, 99]);
     });
 
     test('falls back to a flat line at the current value with no candles', () {
-      final s = balanceSeriesOnGrid(grid, const [], 5, 42);
+      final s = balanceSeriesOnGrid(grid, const [], 42);
       expect(s.map((p) => p.y).toList(), [42, 42, 42, 42]);
     });
 
-    test('scales close by the holding amount', () {
-      final s = balanceSeriesOnGrid([0], [c(0, 2.5)], 4, 0);
-      expect(s.single.y, 10);
+    test('is scale-invariant — an odd pool unit never blows up the magnitude', () {
+      // A pool quoting in huge units (~1e9) must stay anchored to the real value.
+      final s = balanceSeriesOnGrid([0, 900], [c(0, 1.1e9), c(900, 1.0e9)], 1676);
+      expect(s.last.y, closeTo(1676, 0.01)); // latest anchors to current value
+      expect(s.first.y, closeTo(1843.6, 0.1)); // earlier scaled by 1.1 ratio
+    });
+  });
+
+  group('reuseSeriesOnGrid', () {
+    test('carry-forwards a prior series onto a shifted grid, anchored to value', () {
+      // prev is on buckets 0,900,1800; new grid shifts to 900,1800,2700.
+      final prev = [Point(0, 10), Point(900000, 20), Point(1800000, 30)];
+      // carried = [20,30,30]; anchor last (30) to currentValue 30 → unchanged.
+      final s = reuseSeriesOnGrid([900, 1800, 2700], prev, 30);
+      expect(s.map((p) => p.y).toList(), [20, 30, 30]);
+      expect(s.map((p) => p.x).toList(), [900000, 1800000, 2700000]);
+    });
+
+    test('re-anchors a stale / mis-scaled prior series to the current value', () {
+      // prev ends at a bogus 1e9; must rescale so the latest bucket = value.
+      final prev = [Point(0, 5e8), Point(900000, 1e9)];
+      final s = reuseSeriesOnGrid([0, 900], prev, 100);
+      expect(s.last.y, closeTo(100, 0.01));
+      expect(s.first.y, closeTo(50, 0.01)); // 5e8/1e9 ratio × 100
+    });
+
+    test('falls back to a flat line when there is no prior series', () {
+      final s = reuseSeriesOnGrid([0, 900], const [], 7);
+      expect(s.map((p) => p.y).toList(), [7, 7]);
     });
   });
 
