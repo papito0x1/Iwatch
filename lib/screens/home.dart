@@ -10,6 +10,7 @@ import '../widgets/common.dart';
 import '../widgets/dialogs.dart';
 import '../widgets/sidebar_tile.dart';
 import 'detail_views.dart';
+import 'loading.dart';
 import 'welcome.dart';
 
 const double _paneWidth = 280;
@@ -20,8 +21,29 @@ class HomeScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final model = context.watch<WalletModel>();
-    if (!model.hasWallet) return const _WelcomeScaffold();
 
+    // Three top-level states, cross-faded: no wallet → welcome; a wallet but no
+    // data yet (just added / reset) → branded loader; data present → full UI.
+    final Widget screen;
+    if (!model.hasWallet) {
+      screen = const _WelcomeScaffold();
+    } else if (model.tokenCount == 0) {
+      screen = const _LoadingScaffold();
+    } else {
+      // Stable key so the frequent live-tick rebuilds update in place instead of
+      // re-running the cross-fade each time.
+      screen = KeyedSubtree(
+          key: const ValueKey('content'), child: _content(context, model));
+    }
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 420),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeIn,
+      child: screen,
+    );
+  }
+
+  Widget _content(BuildContext context, WalletModel model) {
     final selected = model.selectedId;
     final isPortfolio = selected == WalletModel.portfolioId;
     final selectedRow = isPortfolio ? null : model.rowById(selected);
@@ -58,6 +80,38 @@ class HomeScreen extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Loading layout: the native title bar + the branded loader, shown while the
+/// first balances load for a freshly added or reset wallet.
+class _LoadingScaffold extends StatelessWidget {
+  const _LoadingScaffold();
+
+  @override
+  Widget build(BuildContext context) {
+    final model = context.read<WalletModel>();
+    return Scaffold(
+      backgroundColor: AppColors.windowBg,
+      appBar: YaruWindowTitleBar(
+        backgroundColor: AppColors.windowBg,
+        border: const BorderSide(color: AppColors.border),
+        foregroundColor: AppColors.text,
+        centerTitle: false,
+        titleSpacing: 0,
+        leading: const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 12),
+          child: Center(child: AppLogo()),
+        ),
+        title: const Text('Iwatch',
+            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
+        actions: [
+          _settingsButton(context, model),
+          const SizedBox(width: 6),
+        ],
+      ),
+      body: const LoadingView(),
     );
   }
 }
